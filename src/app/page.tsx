@@ -4,6 +4,7 @@ import {
   Archive,
   Bell,
   CalendarDays,
+  CheckSquare2,
   ChevronDown,
   Clock3,
   ContactRound,
@@ -13,6 +14,7 @@ import {
   FileDown,
   ExternalLink,
   FileText,
+  Flag,
   Folder as FolderIcon,
   FolderPlus,
   Forward,
@@ -22,6 +24,7 @@ import {
   Menu,
   MoreHorizontal,
   Paperclip,
+  Pin,
   Plus,
   Printer,
   RefreshCw,
@@ -48,8 +51,9 @@ import { SecureMailFrame } from "@/components/mail/secure-mail-frame";
 
 type SystemFolder = "inbox" | "drafts" | "sent" | "outbox" | "starred" | "archive" | "snoozed" | "junk" | "trash";
 type Folder = SystemFolder | `custom:${string}`;
-type ViewFilter = "all" | "unread" | "read" | "starred";
+type ViewFilter = "all" | "unread" | "read" | "starred" | "flagged" | "pinned";
 type SortDirection = "newest" | "oldest";
+type GroupMode = "outlook" | "day" | "week" | "month" | "none";
 
 type MailItem = {
   id: string;
@@ -64,6 +68,8 @@ type MailItem = {
   category?: string;
   snoozedUntil?: string;
   localFolder?: string;
+  localFlagged?: boolean;
+  localPinned?: boolean;
 };
 
 type InboundAttachment = {
@@ -479,6 +485,65 @@ function findIdentityForAddresses(identities: MailIdentity[], addresses: string[
   return identities.find((identity) => normalized.includes(senderEmail(identity.from).trim().toLowerCase()));
 }
 
+function startOfLocalDay(value: Date) {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+}
+
+function startOfLocalWeek(value: Date) {
+  const day = startOfLocalDay(value);
+  const weekday = day.getDay() || 7;
+  day.setDate(day.getDate() - weekday + 1);
+  return day;
+}
+
+function mailGroupLabel(createdAt: string | undefined, mode: GroupMode, pinned = false) {
+  if (pinned) return "Épinglés";
+  const date = createdAt ? new Date(createdAt) : new Date(0);
+  if (Number.isNaN(date.getTime())) return "Plus ancien";
+
+  const now = new Date();
+  const today = startOfLocalDay(now);
+  const messageDay = startOfLocalDay(date);
+  const daysAgo = Math.round((today.getTime() - messageDay.getTime()) / 86_400_000);
+
+  if (mode === "day") {
+    if (daysAgo === 0) return "Aujourd’hui";
+    if (daysAgo === 1) return "Hier";
+    return date.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined });
+  }
+
+  if (mode === "week") {
+    const weekStart = startOfLocalWeek(date);
+    const currentWeek = startOfLocalWeek(now);
+    const weekDiff = Math.round((currentWeek.getTime() - weekStart.getTime()) / (7 * 86_400_000));
+    if (weekDiff === 0) return "Cette semaine";
+    if (weekDiff === 1) return "La semaine dernière";
+    return `Semaine du ${weekStart.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: weekStart.getFullYear() !== now.getFullYear() ? "numeric" : undefined })}`;
+  }
+
+  if (mode === "month") {
+    const sameMonth = date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+    if (sameMonth) return "Ce mois-ci";
+    return date.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  }
+
+  if (mode === "outlook") {
+    if (daysAgo === 0) return "Aujourd’hui";
+    if (daysAgo === 1) return "Hier";
+    const weekStart = startOfLocalWeek(now);
+    if (messageDay >= weekStart) return "Cette semaine";
+    const previousWeekStart = new Date(weekStart);
+    previousWeekStart.setDate(previousWeekStart.getDate() - 7);
+    if (messageDay >= previousWeekStart) return "La semaine dernière";
+    if (date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear()) return "Ce mois-ci";
+    const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    if (date.getMonth() === previousMonth.getMonth() && date.getFullYear() === previousMonth.getFullYear()) return "Le mois dernier";
+    return "Plus ancien";
+  }
+
+  return "";
+}
+
 export default function Home() {
   const [folder, setFolder] = useState<Folder>("inbox");
   const [inbox, setInbox] = useState<MailItem[]>([]);
@@ -496,11 +561,17 @@ export default function Home() {
   const [viewFilter, setViewFilter] = useState<ViewFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [sortDirection, setSortDirection] = useState<SortDirection>("newest");
+  const [groupMode, setGroupMode] = useState<GroupMode>("outlook");
+  const [collapsedMailGroups, setCollapsedMailGroups] = useState<string[]>([]);
+  const [multiSelectEnabled, setMultiSelectEnabled] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
   const [readIds, setReadIds] = useState<string[]>([]);
   const [starredIds, setStarredIds] = useState<string[]>([]);
+  const [flaggedIds, setFlaggedIds] = useState<string[]>([]);
+  const [pinnedIds, setPinnedIds] = useState<string[]>([]);
   const [archivedIds, setArchivedIds] = useState<string[]>([]);
   const [trashedIds, setTrashedIds] = useState<string[]>([]);
   const [junkIds, setJunkIds] = useState<string[]>([]);
@@ -708,6 +779,8 @@ export default function Home() {
             setTemplates(storedTemplates as MailTemplateEntry[]);
             setReadIds(snapshot.readIds);
             setStarredIds(snapshot.starredIds);
+            setFlaggedIds(snapshot.flaggedIds ?? []);
+            setPinnedIds(snapshot.pinnedIds ?? []);
             setArchivedIds(snapshot.archivedIds);
             setTrashedIds(snapshot.trashedIds);
             setJunkIds(snapshot.junkIds ?? []);
@@ -869,6 +942,8 @@ export default function Home() {
         setSent(snapshot.messages.filter((mail) => mail.direction === "outbound") as MailItem[]);
         setReadIds(snapshot.readIds);
         setStarredIds(snapshot.starredIds);
+            setFlaggedIds(snapshot.flaggedIds ?? []);
+            setPinnedIds(snapshot.pinnedIds ?? []);
         setArchivedIds(snapshot.archivedIds);
         setTrashedIds(snapshot.trashedIds);
         setJunkIds(snapshot.junkIds ?? []);
@@ -951,7 +1026,28 @@ export default function Home() {
         return;
       }
 
-      if (composeOpen || settingsOpen || contactsOpen || calendarOpen || !selected) return;
+      if (composeOpen || settingsOpen || contactsOpen || calendarOpen) return;
+
+      if (event.key === "Escape" && multiSelectEnabled) {
+        event.preventDefault();
+        setSelectedIds([]);
+        setMultiSelectEnabled(false);
+        return;
+      }
+
+      if (command && key === "a" && multiSelectEnabled && !editing) {
+        event.preventDefault();
+        setSelectedIds(currentConversationItems.map((mail) => mail.id));
+        return;
+      }
+
+      if (event.key === "Delete" && multiSelectEnabled && selectedMailItems().length > 0 && !editing) {
+        event.preventDefault();
+        bulkTrashSelected();
+        return;
+      }
+
+      if (!selected) return;
 
       if (command && key === "r") {
         event.preventDefault();
@@ -994,7 +1090,7 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKeyDown);
     // The handlers intentionally follow the current UI state and are re-bound when it changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calendarOpen, composeOpen, contactsOpen, folder, selected, settingsOpen]);
+  }, [calendarOpen, composeOpen, contactsOpen, folder, multiSelectEnabled, selected, selectedIds, settingsOpen]);
 
   async function cacheMissingBodies(ids: string[]) {
     if (!window.maildesk || !ids.length) return;
@@ -1062,6 +1158,8 @@ export default function Home() {
         setSent(mergeMailLists(nextSent, cachedSent));
         setReadIds(snapshot.readIds);
         setStarredIds(snapshot.starredIds);
+            setFlaggedIds(snapshot.flaggedIds ?? []);
+            setPinnedIds(snapshot.pinnedIds ?? []);
         setArchivedIds(snapshot.archivedIds);
         setTrashedIds(snapshot.trashedIds);
             setJunkIds(snapshot.junkIds ?? []);
@@ -1081,6 +1179,8 @@ export default function Home() {
           setSent(snapshot.messages.filter((mail) => mail.direction === "outbound") as MailItem[]);
           setReadIds(snapshot.readIds);
           setStarredIds(snapshot.starredIds);
+            setFlaggedIds(snapshot.flaggedIds ?? []);
+            setPinnedIds(snapshot.pinnedIds ?? []);
           setArchivedIds(snapshot.archivedIds);
           setTrashedIds(snapshot.trashedIds);
             setJunkIds(snapshot.junkIds ?? []);
@@ -1162,7 +1262,7 @@ export default function Home() {
     }
   }
 
-  function persistLocalState(id: string, patch: { folder?: string; isRead?: boolean; isStarred?: boolean; isDeleted?: boolean; category?: string; snoozedUntil?: string | null }) {
+  function persistLocalState(id: string, patch: { folder?: string; isRead?: boolean; isStarred?: boolean; isFlagged?: boolean; isPinned?: boolean; isDeleted?: boolean; category?: string; snoozedUntil?: string | null }) {
     if (!window.maildesk) return;
     void window.maildesk.updateLocalMailState({ id, patch }).then(() => window.maildesk?.syncNow());
   }
@@ -1199,6 +1299,30 @@ export default function Home() {
     const next = !starredIds.includes(id);
     setStarredIds((ids) => next ? addId(ids, id) : removeId(ids, id));
     persistLocalState(id, { isStarred: next });
+  }
+
+  function toggleFlag(id: string) {
+    const next = !flaggedIds.includes(id);
+    setFlaggedIds((ids) => next ? addId(ids, id) : removeId(ids, id));
+    setInbox((items) => items.map((item) => item.id === id ? { ...item, localFlagged: next } : item));
+    setSent((items) => items.map((item) => item.id === id ? { ...item, localFlagged: next } : item));
+    persistLocalState(id, { isFlagged: next });
+  }
+
+  function togglePin(id: string) {
+    const next = !pinnedIds.includes(id);
+    setPinnedIds((ids) => next ? addId(ids, id) : removeId(ids, id));
+    setInbox((items) => items.map((item) => item.id === id ? { ...item, localPinned: next } : item));
+    setSent((items) => items.map((item) => item.id === id ? { ...item, localPinned: next } : item));
+    persistLocalState(id, { isPinned: next });
+  }
+
+  function toggleSelectedId(id: string) {
+    const visibleIds = new Set(currentConversationItems.map((mail) => mail.id));
+    setSelectedIds((ids) => {
+      const scoped = ids.filter((itemId) => visibleIds.has(itemId));
+      return scoped.includes(id) ? removeId(scoped, id) : addId(scoped, id);
+    });
   }
 
   function markRead(id: string, read: boolean) {
@@ -1265,6 +1389,8 @@ export default function Home() {
         setSent(snapshot.messages.filter((item) => item.direction === "outbound") as MailItem[]);
         setReadIds(snapshot.readIds);
         setStarredIds(snapshot.starredIds);
+            setFlaggedIds(snapshot.flaggedIds ?? []);
+            setPinnedIds(snapshot.pinnedIds ?? []);
         setArchivedIds(snapshot.archivedIds);
         setTrashedIds(snapshot.trashedIds);
         setJunkIds(snapshot.junkIds ?? []);
@@ -1303,8 +1429,9 @@ export default function Home() {
     setArchivedIds((ids) => removeId(ids, mail.id));
     setJunkIds((ids) => removeId(ids, mail.id));
     setSnoozedIds((ids) => removeId(ids, mail.id));
+    setPinnedIds((ids) => removeId(ids, mail.id));
     updateMailMetadata(mail.id, { snoozedUntil: undefined });
-    persistLocalState(mail.id, { folder: "trash", snoozedUntil: null, isDeleted: false });
+    persistLocalState(mail.id, { folder: "trash", snoozedUntil: null, isPinned: false, isDeleted: false });
     if (folder !== "trash") clearReadingPane(mail.id);
   }
 
@@ -1325,8 +1452,46 @@ export default function Home() {
     setJunkIds((ids) => removeId(ids, mail.id));
     setSnoozedIds((ids) => removeId(ids, mail.id));
     setStarredIds((ids) => removeId(ids, mail.id));
-    persistLocalState(mail.id, { isDeleted: true, isStarred: false });
+    setFlaggedIds((ids) => removeId(ids, mail.id));
+    setPinnedIds((ids) => removeId(ids, mail.id));
+    persistLocalState(mail.id, { isDeleted: true, isStarred: false, isFlagged: false, isPinned: false });
     clearReadingPane(mail.id);
+  }
+
+  function selectedMailItems() {
+    const selectedSet = new Set(selectedIds);
+    return currentConversationItems.filter((mail) => selectedSet.has(mail.id));
+  }
+
+  function bulkTrashSelected() {
+    const items = selectedMailItems();
+    if (!items.length) return;
+    items.forEach((mail) => folder === "trash" ? deleteForever(mail) : trashMail(mail));
+    setSelectedIds([]);
+  }
+
+  function bulkFlagSelected() {
+    const items = selectedMailItems();
+    if (!items.length) return;
+    const shouldFlag = items.some((mail) => !flaggedIds.includes(mail.id));
+    items.forEach((mail) => {
+      setFlaggedIds((ids) => shouldFlag ? addId(ids, mail.id) : removeId(ids, mail.id));
+      setInbox((rows) => rows.map((item) => item.id === mail.id ? { ...item, localFlagged: shouldFlag } : item));
+      setSent((rows) => rows.map((item) => item.id === mail.id ? { ...item, localFlagged: shouldFlag } : item));
+      persistLocalState(mail.id, { isFlagged: shouldFlag });
+    });
+  }
+
+  function bulkPinSelected() {
+    const items = selectedMailItems();
+    if (!items.length) return;
+    const shouldPin = items.some((mail) => !pinnedIds.includes(mail.id));
+    items.forEach((mail) => {
+      setPinnedIds((ids) => shouldPin ? addId(ids, mail.id) : removeId(ids, mail.id));
+      setInbox((rows) => rows.map((item) => item.id === mail.id ? { ...item, localPinned: shouldPin } : item));
+      setSent((rows) => rows.map((item) => item.id === mail.id ? { ...item, localPinned: shouldPin } : item));
+      persistLocalState(mail.id, { isPinned: shouldPin });
+    });
   }
 
   function openSavedDraft(draft: DraftEntry) {
@@ -1686,6 +1851,12 @@ export default function Home() {
       case "toggle-star":
         toggleStar(mail.id);
         break;
+      case "toggle-flag":
+        toggleFlag(mail.id);
+        break;
+      case "toggle-pin":
+        togglePin(mail.id);
+        break;
       case "junk":
         moveToJunk(mail);
         break;
@@ -1717,6 +1888,8 @@ export default function Home() {
       folder: effectiveFolder,
       isRead: readIds.includes(mail.id),
       isStarred: starredIds.includes(mail.id),
+      isFlagged: flaggedIds.includes(mail.id),
+      isPinned: pinnedIds.includes(mail.id),
       canBlock: sourceFolder(mail) !== "sent",
     });
   }
@@ -2503,6 +2676,8 @@ export default function Home() {
       setSent(snapshot.messages.filter((mail) => mail.direction === "outbound") as MailItem[]);
       setReadIds(snapshot.readIds);
       setStarredIds(snapshot.starredIds);
+            setFlaggedIds(snapshot.flaggedIds ?? []);
+            setPinnedIds(snapshot.pinnedIds ?? []);
       setArchivedIds(snapshot.archivedIds);
       setTrashedIds(snapshot.trashedIds);
       setJunkIds(snapshot.junkIds ?? []);
@@ -2646,6 +2821,8 @@ export default function Home() {
       setSent(snapshot.messages.filter((mail) => mail.direction === "outbound") as MailItem[]);
       setReadIds(snapshot.readIds);
       setStarredIds(snapshot.starredIds);
+            setFlaggedIds(snapshot.flaggedIds ?? []);
+            setPinnedIds(snapshot.pinnedIds ?? []);
       setArchivedIds(snapshot.archivedIds);
       setTrashedIds(snapshot.trashedIds);
             setJunkIds(snapshot.junkIds ?? []);
@@ -2697,6 +2874,8 @@ export default function Home() {
       setSent(snapshot.messages.filter((mail) => mail.direction === "outbound") as MailItem[]);
       setReadIds(snapshot.readIds);
       setStarredIds(snapshot.starredIds);
+            setFlaggedIds(snapshot.flaggedIds ?? []);
+            setPinnedIds(snapshot.pinnedIds ?? []);
       setArchivedIds(snapshot.archivedIds);
       setTrashedIds(snapshot.trashedIds);
             setJunkIds(snapshot.junkIds ?? []);
@@ -2920,6 +3099,8 @@ export default function Home() {
       if (viewFilter === "unread") scoped = scoped.filter((mail) => !readIds.includes(mail.id));
       if (viewFilter === "read") scoped = scoped.filter((mail) => readIds.includes(mail.id));
       if (viewFilter === "starred") scoped = scoped.filter((mail) => starredIds.includes(mail.id));
+      if (viewFilter === "flagged") scoped = scoped.filter((mail) => flaggedIds.includes(mail.id));
+      if (viewFilter === "pinned") scoped = scoped.filter((mail) => pinnedIds.includes(mail.id));
       if (categoryFilter) scoped = scoped.filter((mail) => mail.category === categoryFilter);
     }
 
@@ -2928,7 +3109,7 @@ export default function Home() {
       const b = new Date(right.created_at || 0).getTime();
       return sortDirection === "newest" ? b - a : a - b;
     });
-  }, [allMail, archivedIds, categoryFilter, deletedIds, drafts, folder, inbox, junkIds, localSearchIds, outbox, readIds, search, sent, snoozedIds, sortDirection, starredIds, trashedIds, viewFilter]);
+  }, [allMail, archivedIds, categoryFilter, deletedIds, drafts, flaggedIds, folder, inbox, junkIds, localSearchIds, outbox, pinnedIds, readIds, search, sent, snoozedIds, sortDirection, starredIds, trashedIds, viewFilter]);
 
   const currentConversationItems = useMemo(() => {
     if (folder === "outbox" || folder === "drafts") return currentItems;
@@ -2946,11 +3127,35 @@ export default function Home() {
     })[0]);
 
     return representatives.sort((left, right) => {
+      const leftPinned = pinnedIds.includes(left.id);
+      const rightPinned = pinnedIds.includes(right.id);
+      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
       const a = new Date(left.created_at || 0).getTime();
       const b = new Date(right.created_at || 0).getTime();
       return sortDirection === "newest" ? b - a : a - b;
     });
-  }, [conversationIndex, currentItems, folder, sortDirection]);
+  }, [conversationIndex, currentItems, folder, pinnedIds, sortDirection]);
+
+  const groupedConversationItems = useMemo(() => {
+    if (groupMode === "none" || folder === "outbox" || folder === "drafts") {
+      return [{ label: "", items: currentConversationItems }];
+    }
+
+    const groups = new Map<string, MailItem[]>();
+    for (const mail of currentConversationItems) {
+      const label = mailGroupLabel(mail.created_at, groupMode, pinnedIds.includes(mail.id));
+      const items = groups.get(label) ?? [];
+      items.push(mail);
+      groups.set(label, items);
+    }
+
+    return [...groups.entries()].map(([label, items]) => ({ label, items }));
+  }, [currentConversationItems, folder, groupMode, pinnedIds]);
+
+  const selectableConversationIds = currentConversationItems.map((mail) => mail.id);
+  const visibleSelectedIds = selectedIds.filter((id) => selectableConversationIds.includes(id));
+  const allVisibleSelected = selectableConversationIds.length > 0
+    && selectableConversationIds.every((id) => visibleSelectedIds.includes(id));
 
   const unreadCount = inbox.filter((mail) => !readIds.includes(mail.id) && !archivedIds.includes(mail.id) && !trashedIds.includes(mail.id) && !junkIds.includes(mail.id) && !snoozedIds.includes(mail.id) && !deletedIds.includes(mail.id)).length;
   const archiveCount = allMail.filter((mail) => archivedIds.includes(mail.id) && !trashedIds.includes(mail.id) && !deletedIds.includes(mail.id)).length;
@@ -3121,6 +3326,18 @@ export default function Home() {
             <div className="list-toolbar-controls">
               {folder !== "outbox" && folder !== "drafts" && (
                 <>
+                  <button
+                    type="button"
+                    className={multiSelectEnabled ? "toolbar-toggle active" : "toolbar-toggle"}
+                    onClick={() => setMultiSelectEnabled((value) => {
+                      const next = !value;
+                      if (!next) setSelectedIds([]);
+                      return next;
+                    })}
+                    title="Activer ou désactiver la sélection multiple"
+                  >
+                    <CheckSquare2 size={14} /> Sélection
+                  </button>
                   <label>
                     <span>Filtrer</span><ChevronDown size={13} />
                     <select value={viewFilter} onChange={(event) => setViewFilter(event.target.value as ViewFilter)}>
@@ -3128,6 +3345,18 @@ export default function Home() {
                       <option value="unread">Non lus</option>
                       <option value="read">Lus</option>
                       <option value="starred">Favoris</option>
+                      <option value="flagged">Avec drapeau</option>
+                      <option value="pinned">Épinglés</option>
+                    </select>
+                  </label>
+                  <label>
+                    <CalendarDays size={13} /><span>Regrouper</span><ChevronDown size={13} />
+                    <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as GroupMode)}>
+                      <option value="outlook">Outlook</option>
+                      <option value="day">Par jour</option>
+                      <option value="week">Par semaine</option>
+                      <option value="month">Par mois</option>
+                      <option value="none">Aucun groupe</option>
                     </select>
                   </label>
                   <label>
@@ -3142,89 +3371,186 @@ export default function Home() {
               <button onClick={() => setSortDirection((value) => value === "newest" ? "oldest" : "newest")}>{sortDirection === "newest" ? "Plus récents" : "Plus anciens"}</button>
             </div>
           </div>
+          {multiSelectEnabled && folder !== "outbox" && folder !== "drafts" && (
+            <div className="bulk-selection-bar">
+              <button
+                type="button"
+                className={allVisibleSelected ? "bulk-check checked" : "bulk-check"}
+                onClick={() => setSelectedIds(allVisibleSelected ? [] : selectableConversationIds)}
+              >
+                <span aria-hidden="true">{allVisibleSelected ? "✓" : ""}</span>
+                {allVisibleSelected ? "Tout désélectionner" : "Tout sélectionner"}
+              </button>
+              <strong>{visibleSelectedIds.length} sélectionné{visibleSelectedIds.length > 1 ? "s" : ""}</strong>
+              <div className="bulk-actions">
+                <button type="button" disabled={!visibleSelectedIds.length} onClick={bulkTrashSelected} title={folder === "trash" ? "Supprimer définitivement" : "Mettre à la corbeille"}><Trash2 size={15} /></button>
+                <button type="button" disabled={!visibleSelectedIds.length} onClick={bulkFlagSelected} title="Ajouter ou retirer le drapeau"><Flag size={15} /></button>
+                <button type="button" disabled={!visibleSelectedIds.length} onClick={bulkPinSelected} title="Épingler ou désépingler"><Pin size={15} /></button>
+              </div>
+            </div>
+          )}
 
           {error && <div className="error-banner">{error}</div>}
           <div className="message-list">
             {loading ? Array.from({ length: 7 }).map((_, index) => <div className="mail-skeleton" key={index} />) : currentConversationItems.length === 0 ? (
               <div className="empty-state"><Mail size={34} /><strong>Aucun message</strong><span>Aucun courrier ne correspond à cette vue.</span></div>
-            ) : currentConversationItems.map((mail) => {
-              const queued = folder === "outbox" ? outbox.find((item) => item.id === mail.id) : undefined;
-              const draftItem = folder === "drafts" ? drafts.find((item) => item.id === mail.id) : undefined;
-              const threadKey = conversationIndex.keyById.get(mail.id);
-              const thread = threadKey ? (conversationIndex.messagesByKey.get(threadKey) ?? [mail]) : [mail];
-              const threadCount = queued || draftItem ? 1 : thread.length;
-              const unread = !queued && !draftItem && thread.some((item) => !readIds.includes(item.id) && sourceFolder(item) !== "sent");
-              const selectedKey = selected ? conversationIndex.keyById.get(selected.id) : undefined;
-              const active = !queued && Boolean(threadKey && selectedKey === threadKey);
-              const fromSent = !queued && sourceFolder(mail) === "sent";
-              const scheduledTime = queued?.nextAttemptAt ? new Date(queued.nextAttemptAt) : null;
-              const isScheduled = Boolean(scheduledTime && scheduledTime.getTime() > Date.now() + 1000);
-              const queueLabel = queued?.status === "sending"
-                ? "Envoi en cours…"
-                : queued?.status === "failed"
-                  ? `Échec — ${queued.lastError || "nouvelle tentative programmée"}`
-                  : isScheduled && scheduledTime
-                    ? `Programmé le ${scheduledTime.toLocaleString("fr-FR")}`
-                    : "En attente d’envoi";
-              return (
-                <button
-                  key={mail.id}
-                  className={`mail-row ${unread ? "unread" : ""} ${active ? "selected" : ""} ${queued ? "queued" : ""}`}
-                  draggable={!queued && !draftItem}
-                  onDragStart={(event) => {
-                    if (queued || draftItem) return;
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("application/x-maildesk-mail-id", mail.id);
-                    event.dataTransfer.setData("text/plain", mail.id);
-                  }}
-                  onClick={() => draftItem ? openSavedDraft(draftItem) : queued ? void editOutboxItem(queued) : void openMail(mail)}
-                  onDoubleClick={() => {
-                    if (!queued && !draftItem) void window.maildesk?.openMessageWindow(mail.id);
-                  }}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    if (queued || draftItem) return;
-                    setSelected(mail);
-                    void showContextMenu(mail);
-                  }}
-                >
-                  <span className="unread-dot" />
-                  <div className="mail-row-main">
-                    <div className="mail-row-top"><strong>{draftItem ? (draftItem.to || "Brouillon") : queued ? (queued.to || "Destinataire") : fromSent ? (mail.to?.join(", ") || "Destinataire") : senderName(mail.from)}</strong><time>{formatDate(draftItem?.updatedAt || queued?.createdAt || mail.created_at)}</time></div>
-                    <div className="mail-subject">
-                      {mail.category && <span className={`category-dot category-${mail.category}`} title={`Catégorie ${mail.category}`} />}
-                      {mail.subject || "(Sans objet)"}
-                      {threadCount > 1 && <span className="thread-count">{threadCount}</span>}
-                    </div>
-                    <div className={`mail-preview ${queued?.status === "failed" ? "queue-error" : ""}`}>
-                      {draftItem
-                        ? "Brouillon enregistré"
-                        : queued
-                          ? queueLabel
-                          : folder === "snoozed" && mail.snoozedUntil
-                          ? `Revient le ${new Date(mail.snoozedUntil).toLocaleString("fr-FR")}`
-                          : threadCount > 1
-                            ? `${threadCount} messages dans cette conversation`
-                            : fromSent
-                              ? "Message envoyé avec Resend"
-                              : mail.from}
-                    </div>
-                  </div>
-                  {draftItem ? (
-                    <span className="outbox-row-actions">
-                      <span role="button" tabIndex={0} title="Supprimer le brouillon" onClick={(event) => { event.stopPropagation(); void deleteDraftEntry(draftItem.id); }}><Trash2 size={15} /></span>
-                    </span>
-                  ) : queued ? (
-                    <span className="outbox-row-actions">
-                      <span role="button" tabIndex={0} title="Réessayer maintenant" onClick={(event) => { event.stopPropagation(); void retryOutboxItem(queued.id); }}><RefreshCw size={15} /></span>
-                      <span role="button" tabIndex={0} title="Supprimer de la boîte d’envoi" onClick={(event) => { event.stopPropagation(); void deleteOutboxItem(queued.id); }}><Trash2 size={15} /></span>
-                    </span>
-                  ) : (
-                    <span className={`star-button ${starredIds.includes(mail.id) ? "is-starred" : ""}`} onClick={(event) => { event.stopPropagation(); toggleStar(mail.id); }}><Star size={16} fill={starredIds.includes(mail.id) ? "currentColor" : "none"} /></span>
-                  )}
-                </button>
-              );
-            })}
+            ) : groupedConversationItems.map((group) => (
+              <div className="mail-group" key={group.label || "all"}>
+                {group.label && (
+                  <button
+                    type="button"
+                    className="mail-group-heading"
+                    onClick={() => {
+                      const key = `${groupMode}:${group.label}`;
+                      setCollapsedMailGroups((items) => items.includes(key) ? removeId(items, key) : addId(items, key));
+                    }}
+                  >
+                    <ChevronDown
+                      size={14}
+                      className={collapsedMailGroups.includes(`${groupMode}:${group.label}`) ? "collapsed" : ""}
+                    />
+                    <span>{group.label}</span>
+                    <em>{group.items.length}</em>
+                  </button>
+                )}
+                {!collapsedMailGroups.includes(`${groupMode}:${group.label}`) && group.items.map((mail) => {
+                  const queued = folder === "outbox" ? outbox.find((item) => item.id === mail.id) : undefined;
+                  const draftItem = folder === "drafts" ? drafts.find((item) => item.id === mail.id) : undefined;
+                  const threadKey = conversationIndex.keyById.get(mail.id);
+                  const thread = threadKey ? (conversationIndex.messagesByKey.get(threadKey) ?? [mail]) : [mail];
+                  const threadCount = queued || draftItem ? 1 : thread.length;
+                  const unread = !queued && !draftItem && thread.some((item) => !readIds.includes(item.id) && sourceFolder(item) !== "sent");
+                  const selectedKey = selected ? conversationIndex.keyById.get(selected.id) : undefined;
+                  const active = !queued && Boolean(threadKey && selectedKey === threadKey);
+                  const fromSent = !queued && sourceFolder(mail) === "sent";
+                  const flagged = flaggedIds.includes(mail.id);
+                  const pinned = pinnedIds.includes(mail.id);
+                  const multiSelected = selectedIds.includes(mail.id);
+                  const displayName = draftItem
+                    ? (draftItem.to || "Brouillon")
+                    : queued
+                      ? (queued.to || "Destinataire")
+                      : fromSent
+                        ? (mail.to?.join(", ") || "Destinataire")
+                        : senderName(mail.from);
+                  const initial = displayName.trim().charAt(0).toUpperCase() || "?";
+                  const scheduledTime = queued?.nextAttemptAt ? new Date(queued.nextAttemptAt) : null;
+                  const isScheduled = Boolean(scheduledTime && scheduledTime.getTime() > Date.now() + 1000);
+                  const queueLabel = queued?.status === "sending"
+                    ? "Envoi en cours…"
+                    : queued?.status === "failed"
+                      ? `Échec — ${queued.lastError || "nouvelle tentative programmée"}`
+                      : isScheduled && scheduledTime
+                        ? `Programmé le ${scheduledTime.toLocaleString("fr-FR")}`
+                        : "En attente d’envoi";
+
+                  return (
+                    <button
+                      key={mail.id}
+                      className={`mail-row outlook-mail-row ${unread ? "unread" : ""} ${active ? "selected" : ""} ${multiSelected ? "multi-selected" : ""} ${pinned ? "is-pinned" : ""} ${flagged ? "is-flagged" : ""} ${queued ? "queued" : ""}`}
+                      draggable={!queued && !draftItem && !multiSelectEnabled}
+                      onDragStart={(event) => {
+                        if (queued || draftItem || multiSelectEnabled) return;
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("application/x-maildesk-mail-id", mail.id);
+                        event.dataTransfer.setData("text/plain", mail.id);
+                      }}
+                      onClick={() => {
+                        if (multiSelectEnabled && !queued && !draftItem) {
+                          toggleSelectedId(mail.id);
+                          return;
+                        }
+                        if (draftItem) openSavedDraft(draftItem);
+                        else if (queued) void editOutboxItem(queued);
+                        else void openMail(mail);
+                      }}
+                      onDoubleClick={() => {
+                        if (!multiSelectEnabled && !queued && !draftItem) void window.maildesk?.openMessageWindow(mail.id);
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        if (queued || draftItem) return;
+                        setSelected(mail);
+                        void showContextMenu(mail);
+                      }}
+                    >
+                      <span className="mail-row-leading">
+                        {multiSelectEnabled && !queued && !draftItem ? (
+                          <span
+                            className={multiSelected ? "mail-select-box checked" : "mail-select-box"}
+                            role="checkbox"
+                            aria-checked={multiSelected}
+                            tabIndex={0}
+                            onClick={(event) => { event.stopPropagation(); toggleSelectedId(mail.id); }}
+                          >
+                            {multiSelected ? "✓" : ""}
+                          </span>
+                        ) : <span className="unread-dot" />}
+                      </span>
+                      <span className="mail-avatar" aria-hidden="true">{initial}</span>
+                      <div className="mail-row-main">
+                        <div className="mail-row-top">
+                          <strong>{displayName}</strong>
+                          {pinned && <span className="mail-state-label"><Pin size={11} /> Épinglé</span>}
+                        </div>
+                        <div className="mail-subject">
+                          {mail.category && <span className={`category-dot category-${mail.category}`} title={`Catégorie ${mail.category}`} />}
+                          {mail.subject || "(Sans objet)"}
+                          {threadCount > 1 && <span className="thread-count">{threadCount}</span>}
+                        </div>
+                        <div className={`mail-preview ${queued?.status === "failed" ? "queue-error" : ""}`}>
+                          {draftItem
+                            ? "Brouillon enregistré"
+                            : queued
+                              ? queueLabel
+                              : folder === "snoozed" && mail.snoozedUntil
+                                ? `Revient le ${new Date(mail.snoozedUntil).toLocaleString("fr-FR")}`
+                                : threadCount > 1
+                                  ? `${threadCount} messages dans cette conversation`
+                                  : fromSent
+                                    ? "Message envoyé avec Resend"
+                                    : mail.from}
+                        </div>
+                      </div>
+                      {draftItem ? (
+                        <span className="outbox-row-actions">
+                          <span role="button" tabIndex={0} title="Supprimer le brouillon" onClick={(event) => { event.stopPropagation(); void deleteDraftEntry(draftItem.id); }}><Trash2 size={15} /></span>
+                        </span>
+                      ) : queued ? (
+                        <span className="outbox-row-actions">
+                          <span role="button" tabIndex={0} title="Réessayer maintenant" onClick={(event) => { event.stopPropagation(); void retryOutboxItem(queued.id); }}><RefreshCw size={15} /></span>
+                          <span role="button" tabIndex={0} title="Supprimer de la boîte d’envoi" onClick={(event) => { event.stopPropagation(); void deleteOutboxItem(queued.id); }}><Trash2 size={15} /></span>
+                        </span>
+                      ) : (
+                        <span className="mail-row-side">
+                          <span className="mail-quick-actions">
+                            <span role="button" tabIndex={0} title={unread ? "Marquer comme lu" : "Marquer comme non lu"} onClick={(event) => { event.stopPropagation(); markRead(mail.id, unread); }}>
+                              {unread ? <MailOpen size={15} /> : <Mail size={15} />}
+                            </span>
+                            <span className={flagged ? "flag-action active" : "flag-action"} role="button" tabIndex={0} title={flagged ? "Retirer le drapeau" : "Marquer comme important"} onClick={(event) => { event.stopPropagation(); toggleFlag(mail.id); }}>
+                              <Flag size={15} fill={flagged ? "currentColor" : "none"} />
+                            </span>
+                            <span className={pinned ? "pin-action active" : "pin-action"} role="button" tabIndex={0} title={pinned ? "Désépingler" : "Épingler en haut"} onClick={(event) => { event.stopPropagation(); togglePin(mail.id); }}>
+                              <Pin size={15} fill={pinned ? "currentColor" : "none"} />
+                            </span>
+                          </span>
+                          <span className="mail-side-bottom">
+                            <time>{formatDate(mail.created_at)}</time>
+                            <span className="trash-action" role="button" tabIndex={0} title={folder === "trash" ? "Supprimer définitivement" : "Mettre à la corbeille"} onClick={(event) => {
+                              event.stopPropagation();
+                              if (folder === "trash") deleteForever(mail);
+                              else trashMail(mail);
+                            }}>
+                              <Trash2 size={15} />
+                            </span>
+                          </span>
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         </section>
 
@@ -3252,6 +3578,8 @@ export default function Home() {
                     {MAIL_CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                   </select>
                 </label>
+                <button className={flaggedIds.includes(detail.id) ? "state-action active flag" : "state-action"} onClick={() => toggleFlag(detail.id)} title={flaggedIds.includes(detail.id) ? "Retirer le drapeau" : "Marquer comme important"}><Flag size={17} fill={flaggedIds.includes(detail.id) ? "currentColor" : "none"} /> Important</button>
+                <button className={pinnedIds.includes(detail.id) ? "state-action active pin" : "state-action"} onClick={() => togglePin(detail.id)} title={pinnedIds.includes(detail.id) ? "Désépingler" : "Épingler en haut"}><Pin size={17} fill={pinnedIds.includes(detail.id) ? "currentColor" : "none"} /> Épingler</button>
                 {trashedIds.includes(detail.id) ? (
                   <>
                     <button onClick={() => restoreMail(detail)}><RotateCcw size={17} /> Restaurer</button>
@@ -3758,7 +4086,7 @@ export default function Home() {
                     <div className="settings-panel-title"><div><span className="eyebrow">Application</span><h3>Mises à jour</h3><p>Manifest HTTPS + vérification SHA-256 avant installation.</p></div>{settingsPanelSaveButton("updates")}</div>
                     <label className="windows-option update-toggle"><input type="checkbox" checked={settingsAutoUpdateEnabled} onChange={(event) => setSettingsAutoUpdateEnabled(event.target.checked)} /><span><strong>Rechercher automatiquement les mises à jour</strong><small>Vérification au démarrage puis toutes les 6 heures.</small></span></label>
                     <label className="settings-field"><span>URL HTTPS du manifest latest.json</span><input value={settingsUpdateManifestUrl} onChange={(event) => setSettingsUpdateManifestUrl(event.target.value)} placeholder="https://votre-domaine.fr/maildesk/latest.json" /></label>
-                    <div className="update-manifest-example"><strong>Format attendu</strong><pre>{"{\n  \"version\": \"0.4.1\",\n  \"url\": \"https://votre-domaine.fr/MailDesk-Setup-0.4.1-x64.exe\",\n  \"sha256\": \"SHA256_DU_SETUP\",\n  \"notes\": \"Corrections et améliorations\"\n}"}</pre></div>
+                    <div className="update-manifest-example"><strong>Format attendu</strong><pre>{"{\n  \"version\": \"0.4.3\",\n  \"url\": \"https://votre-domaine.fr/MailDesk-Setup-0.4.3-x64.exe\",\n  \"sha256\": \"SHA256_DU_SETUP\",\n  \"notes\": \"Corrections et améliorations\"\n}"}</pre></div>
                     <div className="supabase-actions"><button type="button" className="primary-outline" onClick={() => void checkUpdatesNow()} disabled={checkingUpdates || !settingsUpdateManifestUrl.trim()}>{checkingUpdates ? "Vérification..." : "Vérifier maintenant"}</button>{updateReady && <button type="button" className="update-install-button" onClick={() => void installReadyUpdate()}>Installer la mise à jour</button>}</div>
                     {updateStatusMessage && <div className="settings-message">{updateStatusMessage}</div>}
                   </section>

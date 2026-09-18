@@ -46,6 +46,8 @@ function getDb() {
       folder TEXT NOT NULL DEFAULT 'inbox',
       is_read INTEGER NOT NULL DEFAULT 0,
       is_starred INTEGER NOT NULL DEFAULT 0,
+      is_flagged INTEGER NOT NULL DEFAULT 0,
+      is_pinned INTEGER NOT NULL DEFAULT 0,
       is_deleted INTEGER NOT NULL DEFAULT 0,
       category TEXT,
       snoozed_until TEXT,
@@ -171,6 +173,8 @@ function getDb() {
   ensureTableColumn(database, "messages", "references_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureTableColumn(database, "messages", "category", "TEXT");
   ensureTableColumn(database, "messages", "snoozed_until", "TEXT");
+  ensureTableColumn(database, "messages", "is_flagged", "INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(database, "messages", "is_pinned", "INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(database, "drafts", "from_addr", "TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(database, "drafts", "reply_references_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureTableColumn(database, "contacts", "company", "TEXT NOT NULL DEFAULT ''");
@@ -731,6 +735,8 @@ function rowToMail(row) {
     localFolder: row.folder,
     localRead: Boolean(row.is_read),
     localStarred: Boolean(row.is_starred),
+    localFlagged: Boolean(row.is_flagged),
+    localPinned: Boolean(row.is_pinned),
     localDeleted: Boolean(row.is_deleted),
     category: row.category || undefined,
     snoozedUntil: row.snoozed_until || undefined,
@@ -847,6 +853,8 @@ function searchLocalMessages(value, limit = 100) {
       if (state === "unread") clauses.push("m.is_read = 0");
       if (state === "read") clauses.push("m.is_read = 1");
       if (state === "starred") clauses.push("m.is_starred = 1");
+      if (state === "flagged") clauses.push("m.is_flagged = 1");
+      if (state === "pinned") clauses.push("m.is_pinned = 1");
       if (state === "inbound") clauses.push("m.direction = 'inbound'");
       if (state === "outbound") clauses.push("m.direction = 'outbound'");
     } else if (filter.key === "category") {
@@ -964,6 +972,8 @@ function updateState(id, patch = {}) {
   const folder = typeof patch.folder === "string" ? patch.folder : row.folder;
   const isRead = typeof patch.isRead === "boolean" ? Number(patch.isRead) : row.is_read;
   const isStarred = typeof patch.isStarred === "boolean" ? Number(patch.isStarred) : row.is_starred;
+  const isFlagged = typeof patch.isFlagged === "boolean" ? Number(patch.isFlagged) : row.is_flagged;
+  const isPinned = typeof patch.isPinned === "boolean" ? Number(patch.isPinned) : row.is_pinned;
   const isDeleted = typeof patch.isDeleted === "boolean" ? Number(patch.isDeleted) : row.is_deleted;
   const category = typeof patch.category === "string" ? (patch.category || null) : row.category;
   const snoozedUntil = typeof patch.snoozedUntil === "string" || patch.snoozedUntil === null
@@ -973,9 +983,9 @@ function updateState(id, patch = {}) {
 
   db.prepare(`
     UPDATE messages
-    SET folder = ?, is_read = ?, is_starred = ?, is_deleted = ?, category = ?, snoozed_until = ?, updated_at = ?, synced_at = NULL
+    SET folder = ?, is_read = ?, is_starred = ?, is_flagged = ?, is_pinned = ?, is_deleted = ?, category = ?, snoozed_until = ?, updated_at = ?, synced_at = NULL
     WHERE id = ?
-  `).run(folder, isRead, isStarred, isDeleted, category, snoozedUntil, now, String(id));
+  `).run(folder, isRead, isStarred, isFlagged, isPinned, isDeleted, category, snoozedUntil, now, String(id));
   indexMessage(db, id);
   return rowToMail(db.prepare("SELECT * FROM messages WHERE id = ?").get(String(id)));
 }
@@ -996,7 +1006,7 @@ function getSnapshot() {
   `).run(now, now);
 
   const rows = db.prepare("SELECT * FROM messages WHERE is_deleted = 0 ORDER BY datetime(created_at) DESC").all();
-  const states = db.prepare("SELECT id, folder, is_read, is_starred, is_deleted FROM messages").all();
+  const states = db.prepare("SELECT id, folder, is_read, is_starred, is_flagged, is_pinned, is_deleted FROM messages").all();
   const missingBodies = db.prepare("SELECT id FROM messages WHERE direction = 'inbound' AND is_deleted = 0 AND html IS NULL AND text_body IS NULL").all();
   return {
     databasePath: databasePath(),
@@ -1004,6 +1014,8 @@ function getSnapshot() {
     missingBodyIds: missingBodies.map((row) => row.id),
     readIds: states.filter((row) => row.is_read).map((row) => row.id),
     starredIds: states.filter((row) => row.is_starred).map((row) => row.id),
+    flaggedIds: states.filter((row) => row.is_flagged).map((row) => row.id),
+    pinnedIds: states.filter((row) => row.is_pinned).map((row) => row.id),
     archivedIds: states.filter((row) => row.folder === "archive" && !row.is_deleted).map((row) => row.id),
     trashedIds: states.filter((row) => row.folder === "trash" && !row.is_deleted).map((row) => row.id),
     junkIds: states.filter((row) => row.folder === "junk" && !row.is_deleted).map((row) => row.id),
@@ -1033,6 +1045,8 @@ function exportRows() {
     folder: row.folder,
     is_read: Boolean(row.is_read),
     is_starred: Boolean(row.is_starred),
+    is_flagged: Boolean(row.is_flagged),
+    is_pinned: Boolean(row.is_pinned),
     is_deleted: Boolean(row.is_deleted),
     category: row.category || null,
     snoozed_until: row.snoozed_until || null,
@@ -1047,9 +1061,9 @@ function mergeRemoteRows(rows) {
     INSERT INTO messages (
       id, direction, created_at, from_addr, to_json, cc_json, bcc_json, reply_to_json,
       subject, message_id, headers_json, parent_message_id, references_json,
-      html, text_body, attachments_json, folder, is_read, is_starred,
+      html, text_body, attachments_json, folder, is_read, is_starred, is_flagged, is_pinned,
       is_deleted, category, snoozed_until, updated_at, synced_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       direction = excluded.direction,
       created_at = excluded.created_at,
@@ -1069,6 +1083,8 @@ function mergeRemoteRows(rows) {
       folder = excluded.folder,
       is_read = excluded.is_read,
       is_starred = excluded.is_starred,
+      is_flagged = excluded.is_flagged,
+      is_pinned = excluded.is_pinned,
       is_deleted = excluded.is_deleted,
       category = excluded.category,
       snoozed_until = excluded.snoozed_until,
@@ -1102,6 +1118,8 @@ function mergeRemoteRows(rows) {
         row.folder || (row.direction === "outbound" ? "sent" : "inbox"),
         Number(Boolean(row.is_read)),
         Number(Boolean(row.is_starred)),
+        Number(Boolean(row.is_flagged)),
+        Number(Boolean(row.is_pinned)),
         Number(Boolean(row.is_deleted)),
         row.category || null,
         row.snoozed_until || null,

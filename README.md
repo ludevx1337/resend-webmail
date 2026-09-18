@@ -33,6 +33,9 @@ MailDesk est un client e-mail Windows construit avec **Electron + Next.js + Type
 - boîte d'envoi SQLite hors ligne avec retry automatique, édition/suppression et clés d'idempotence Resend pour éviter les doublons ;
 - recherche plein texte locale SQLite FTS5 dans sujet, expéditeur, destinataires, corps et pièces jointes, disponible hors ligne ;
 - recherche avancée combinable : `from:`, `to:`, `subject:`, `has:attachment`, `before:`, `after:`, `is:`, `category:`, `folder:` ;
+- liste de courrier Outlook-like avec regroupement **Outlook / jour / semaine / mois**, sections repliables et groupe **Épinglés** ;
+- sélection multiple activable avec sélection totale et actions groupées ;
+- drapeau **Important**, épingle persistante et suppression rapide directement sur chaque ligne ;
 - dossiers personnalisés SQLite/Supabase avec compteurs, renommage, suppression sûre, drag & drop et déplacement depuis le menu contextuel ;
 - carnet de contacts SQLite appris automatiquement depuis les correspondants, enrichi avec société, téléphone, tags, notes, favoris et édition complète ;
 - auto-complétion À/Cc/Cci classée par favoris, fréquence et récence, avec navigation clavier ;
@@ -165,6 +168,22 @@ folder:"Factures"
 
 Du texte libre peut être mélangé avec ces filtres, par exemple `contrat from:client@domaine.fr after:2026-09-01 has:attachment`.
 
+Les états `is:flagged` et `is:pinned` permettent aussi de retrouver les messages marqués importants ou épinglés.
+
+### Liste Outlook, regroupements et sélection multiple
+
+La liste de courrier peut être regroupée selon plusieurs modes :
+
+- **Outlook** : Épinglés, Aujourd’hui, Hier, Cette semaine, La semaine dernière, Ce mois-ci, Le mois dernier et Plus ancien ;
+- **Jour** : une section par date ;
+- **Semaine** : une section par semaine ;
+- **Mois** : une section par mois ;
+- **Aucun groupe** : liste continue.
+
+Les sections peuvent être repliées avec leur chevron. L’action **Sélection** active les cases de sélection multiple ; `Ctrl+A` sélectionne les conversations visibles et `Échap` quitte ce mode. La barre groupée permet ensuite de supprimer, marquer important ou épingler plusieurs messages.
+
+Chaque ligne dispose aussi d’actions rapides pour lu/non lu, drapeau **Important**, épingle et corbeille. Un message épinglé remonte dans la section **Épinglés**.
+
 ### Dossiers personnalisés
 
 La section **Mes dossiers** de la barre latérale permet de créer, renommer et supprimer des dossiers locaux. Un message peut être déplacé vers un dossier par drag & drop ou via **clic droit > Déplacer vers**.
@@ -286,8 +305,8 @@ Format du manifest :
 
 ```json
 {
-  "version": "0.4.1",
-  "url": "https://votre-domaine.fr/MailDesk-Setup-0.4.1-x64.exe",
+  "version": "0.4.3",
+  "url": "https://votre-domaine.fr/MailDesk-Setup-0.4.3-x64.exe",
   "sha256": "SHA256_HEXADECIMAL_64_CARACTERES",
   "notes": "Corrections et améliorations"
 }
@@ -352,7 +371,7 @@ Sorties :
 
 ```text
 dist-electron\win-unpacked\MailDesk.exe
-release-0.4.1\MailDesk-Setup-0.4.1-x64.exe
+release-0.4.2\MailDesk-Setup-0.4.2-x64.exe
 ```
 
 ## Architecture
@@ -386,9 +405,9 @@ Le renderer utilise `contextIsolation: true`, `nodeIntegration: false`, `sandbox
 
 ## Licence
 
-MailDesk est distribué sous licence **MIT**.
+MailDesk est distribué sous licence **GNU General Public License v3.0 (GPL-3.0-only)**.
 
-Vous pouvez utiliser, copier, modifier, fusionner, publier, distribuer, sous-licencier et vendre des copies du logiciel, à condition de conserver la notice de copyright et le texte de licence.
+Vous pouvez utiliser, étudier, modifier et redistribuer le logiciel. Si vous redistribuez MailDesk ou une version dérivée, le code source correspondant doit rester disponible sous GPL-3.0 et les mêmes libertés doivent être conservées.
 
 Copyright © 2026 **DevLow**.
 

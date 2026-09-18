@@ -99,6 +99,8 @@ function popupMailContextMenu(event, payload) {
     { type: "separator" },
     { label: payload.isRead ? "Marquer comme non lu" : "Marquer comme lu", click: () => send(payload.isRead ? "mark-unread" : "mark-read") },
     { label: payload.isStarred ? "Retirer des favoris" : "Ajouter aux favoris", click: () => send("toggle-star") },
+    { label: payload.isFlagged ? "Retirer le drapeau" : "Marquer comme important", click: () => send("toggle-flag") },
+    { label: payload.isPinned ? "Désépingler" : "Épingler en haut", click: () => send("toggle-pin") },
     {
       label: "Catégoriser",
       submenu: [

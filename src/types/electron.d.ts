@@ -36,6 +36,8 @@ type LocalMail = {
   text?: string | null;
   category?: string;
   snoozedUntil?: string;
+  localFlagged?: boolean;
+  localPinned?: boolean;
   attachments?: Array<{
     id?: string;
     filename?: string | null;
@@ -155,6 +157,8 @@ type LocalSnapshot = {
   missingBodyIds: string[];
   readIds: string[];
   starredIds: string[];
+  flaggedIds: string[];
+  pinnedIds: string[];
   archivedIds: string[];
   trashedIds: string[];
   junkIds: string[];
@@ -184,6 +188,8 @@ declare global {
         folder: string;
         isRead: boolean;
         isStarred: boolean;
+        isFlagged?: boolean;
+        isPinned?: boolean;
         canBlock?: boolean;
       }) => Promise<void>;
       pickAttachments: () => Promise<ElectronAttachment[]>;
@@ -377,7 +383,7 @@ declare global {
       cacheMailDetail: (payload: { mail: LocalMail; direction: "inbound" | "outbound" }) => Promise<LocalMail | null>;
       updateLocalMailState: (payload: {
         id: string;
-        patch: { folder?: string; isRead?: boolean; isStarred?: boolean; isDeleted?: boolean; category?: string; snoozedUntil?: string | null };
+        patch: { folder?: string; isRead?: boolean; isStarred?: boolean; isFlagged?: boolean; isPinned?: boolean; isDeleted?: boolean; category?: string; snoozedUntil?: string | null };
       }) => Promise<LocalMail | null>;
       syncNow: () => Promise<SyncResult>;
       onMailContextAction: (callback: (payload: NativeMailAction) => void) => () => void;

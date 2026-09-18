@@ -18,6 +18,8 @@ create table if not exists public.maildesk_messages (
   folder text not null default 'inbox',
   is_read boolean not null default false,
   is_starred boolean not null default false,
+  is_flagged boolean not null default false,
+  is_pinned boolean not null default false,
   is_deleted boolean not null default false,
   category text null,
   snoozed_until timestamptz null,
@@ -29,7 +31,9 @@ alter table public.maildesk_messages
   add column if not exists parent_message_id text null,
   add column if not exists references_json jsonb not null default '[]'::jsonb,
   add column if not exists category text null,
-  add column if not exists snoozed_until timestamptz null;
+  add column if not exists snoozed_until timestamptz null,
+  add column if not exists is_flagged boolean not null default false,
+  add column if not exists is_pinned boolean not null default false;
 
 create table if not exists public.maildesk_contacts (
   email text primary key,
