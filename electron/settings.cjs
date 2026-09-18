@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { app, safeStorage } = require("electron");
 
-const SETTINGS_VERSION = 5;
+const SETTINGS_VERSION = 7;
 
 function normalizeIdentities(value, legacyFrom = "", legacySignature = "") {
   const input = Array.isArray(value) ? value : [];
@@ -39,6 +39,11 @@ function normalizeIdentities(value, legacyFrom = "", legacySignature = "") {
   });
 }
 
+function normalizeThemeColor(value) {
+  const color = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : "#0f6cbd";
+}
+
 function defaults() {
   return {
     from: "",
@@ -46,6 +51,8 @@ function defaults() {
     signature: "",
     identities: [],
     undoSendSeconds: 10,
+    refreshIntervalSeconds: 60,
+    themeColor: "#0f6cbd",
     supabaseUrl: "",
     supabaseKey: "",
     supabaseProjectRef: "",
@@ -114,6 +121,8 @@ function effectiveSettings() {
     supabaseManagementToken: stored.supabaseManagementToken || process.env.SUPABASE_ACCESS_TOKEN || "",
     autoUpdateEnabled: Boolean(stored.autoUpdateEnabled),
     updateManifestUrl: stored.updateManifestUrl || process.env.MAILDESK_UPDATE_MANIFEST_URL || "",
+    refreshIntervalSeconds: Math.max(5, Math.min(3600, Number(stored.refreshIntervalSeconds ?? 60))),
+    themeColor: normalizeThemeColor(stored.themeColor),
   };
 }
 
@@ -154,6 +163,12 @@ function saveStoredSettings(input) {
     undoSendSeconds: typeof input?.undoSendSeconds === "number"
       ? Math.max(0, Math.min(30, Math.round(input.undoSendSeconds)))
       : Number(current.undoSendSeconds ?? 10),
+    refreshIntervalSeconds: typeof input?.refreshIntervalSeconds === "number"
+      ? Math.max(5, Math.min(3600, Math.round(input.refreshIntervalSeconds)))
+      : Math.max(5, Math.min(3600, Number(current.refreshIntervalSeconds ?? 60))),
+    themeColor: typeof input?.themeColor === "string"
+      ? normalizeThemeColor(input.themeColor)
+      : normalizeThemeColor(current.themeColor),
     supabaseUrl: typeof input?.supabaseUrl === "string" ? input.supabaseUrl.trim().replace(/\/$/, "") : current.supabaseUrl,
     supabaseKey: typeof input?.supabaseKey === "string" && input.supabaseKey.trim() ? input.supabaseKey.trim() : current.supabaseKey,
     supabaseProjectRef: typeof input?.supabaseProjectRef === "string" ? input.supabaseProjectRef.trim() : current.supabaseProjectRef,
@@ -204,6 +219,8 @@ function publicSettings() {
     signature: current.signature,
     identities: current.identities,
     undoSendSeconds: Number(current.undoSendSeconds ?? 10),
+    refreshIntervalSeconds: Math.max(5, Math.min(3600, Number(current.refreshIntervalSeconds ?? 60))),
+    themeColor: normalizeThemeColor(current.themeColor),
     supabaseUrl: current.supabaseUrl,
     supabaseProjectRef: current.supabaseProjectRef,
     hasApiKey: Boolean(current.apiKey),

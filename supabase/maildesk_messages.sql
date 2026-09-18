@@ -59,12 +59,14 @@ alter table public.maildesk_contacts
 create table if not exists public.maildesk_folders (
   id text primary key,
   name text not null,
+  sort_order integer not null default 0,
   is_deleted boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table public.maildesk_folders
+  add column if not exists sort_order integer not null default 0,
   add column if not exists is_deleted boolean not null default false;
 
 drop index if exists public.maildesk_folders_name_idx;

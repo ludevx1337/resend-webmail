@@ -134,6 +134,7 @@ type CalendarEventItem = {
 type CustomFolder = {
   id: string;
   name: string;
+  sortOrder: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -202,6 +203,8 @@ declare global {
         signature: string;
         identities: MailIdentity[];
         undoSendSeconds: number;
+        refreshIntervalSeconds: number;
+        themeColor: string;
         supabaseUrl: string;
         supabaseProjectRef: string;
         hasApiKey: boolean;
@@ -218,6 +221,8 @@ declare global {
         signature?: string;
         identities?: MailIdentity[];
         undoSendSeconds?: number;
+        refreshIntervalSeconds?: number;
+        themeColor?: string;
         supabaseUrl?: string;
         supabaseKey?: string;
         supabaseProjectRef?: string;
@@ -229,6 +234,8 @@ declare global {
         signature: string;
         identities: MailIdentity[];
         undoSendSeconds: number;
+        refreshIntervalSeconds: number;
+        themeColor: string;
         supabaseUrl: string;
         supabaseProjectRef: string;
         hasApiKey: boolean;
@@ -304,7 +311,8 @@ declare global {
       blockSender: (from: string) => Promise<{ email: string; createdAt: string }>;
       unblockSender: (email: string) => Promise<boolean>;
       listCustomFolders: () => Promise<CustomFolder[]>;
-      saveCustomFolder: (folder: { id?: string; name: string }) => Promise<CustomFolder>;
+      saveCustomFolder: (folder: { id?: string; name: string; sortOrder?: number }) => Promise<CustomFolder>;
+      reorderCustomFolders: (ids: string[]) => Promise<CustomFolder[]>;
       deleteCustomFolder: (id: string) => Promise<{ ok: boolean; moved: number; deletedRules: number }>;
       listRules: () => Promise<MailRule[]>;
       saveRule: (rule: {

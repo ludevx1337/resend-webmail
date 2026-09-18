@@ -119,6 +119,7 @@ function getDb() {
     CREATE TABLE IF NOT EXISTS custom_folders (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       is_deleted INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -183,6 +184,7 @@ function getDb() {
   ensureTableColumn(database, "contacts", "tags_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureTableColumn(database, "contacts", "is_hidden", "INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(database, "custom_folders", "is_deleted", "INTEGER NOT NULL DEFAULT 0");
+  ensureTableColumn(database, "custom_folders", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(database, "mail_rules", "action_value", "TEXT");
   ensureTableColumn(database, "mail_rules", "is_deleted", "INTEGER NOT NULL DEFAULT 0");
   database.exec("DROP INDEX IF EXISTS idx_custom_folders_name;");
@@ -484,13 +486,14 @@ function rowToCustomFolder(row) {
   return {
     id: row.id,
     name: row.name,
+    sortOrder: Number(row.sort_order || 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
 function listCustomFolders() {
-  return getDb().prepare("SELECT * FROM custom_folders WHERE is_deleted = 0 ORDER BY lower(name) ASC").all().map(rowToCustomFolder);
+  return getDb().prepare("SELECT * FROM custom_folders WHERE is_deleted = 0 ORDER BY sort_order ASC, created_at ASC, lower(name) ASC").all().map(rowToCustomFolder);
 }
 
 function saveCustomFolder(folder = {}) {
@@ -504,15 +507,19 @@ function saveCustomFolder(folder = {}) {
   const duplicate = db.prepare("SELECT id FROM custom_folders WHERE lower(name) = lower(?) AND id <> ? AND is_deleted = 0").get(name, id);
   if (duplicate) throw new Error("Un dossier portant ce nom existe déjà.");
 
-  const existing = db.prepare("SELECT created_at FROM custom_folders WHERE id = ?").get(id);
+  const existing = db.prepare("SELECT created_at, sort_order FROM custom_folders WHERE id = ?").get(id);
+  const nextSortOrder = typeof folder.sortOrder === "number"
+    ? Math.max(0, Math.round(folder.sortOrder))
+    : Number(existing?.sort_order ?? ((db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM custom_folders WHERE is_deleted = 0").get()?.next_order) ?? 0));
   db.prepare(`
-    INSERT INTO custom_folders (id, name, is_deleted, created_at, updated_at)
-    VALUES (?, ?, 0, ?, ?)
+    INSERT INTO custom_folders (id, name, sort_order, is_deleted, created_at, updated_at)
+    VALUES (?, ?, ?, 0, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
+      sort_order = excluded.sort_order,
       is_deleted = 0,
       updated_at = excluded.updated_at
-  `).run(id, name, existing?.created_at || now, now);
+  `).run(id, name, nextSortOrder, existing?.created_at || now, now);
   return rowToCustomFolder(db.prepare("SELECT * FROM custom_folders WHERE id = ?").get(id));
 }
 
@@ -537,6 +544,22 @@ function deleteCustomFolder(id) {
   `).run(now, folderId).changes;
   db.prepare("UPDATE custom_folders SET is_deleted = 1, updated_at = ? WHERE id = ?").run(now, folderId);
   return { ok: true, moved: Number(moved || 0), deletedRules: Number(deletedRules || 0) };
+}
+
+function reorderCustomFolders(ids = []) {
+  const db = getDb();
+  const orderedIds = [...new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || "").trim()).filter(Boolean))];
+  const now = new Date().toISOString();
+  const update = db.prepare("UPDATE custom_folders SET sort_order = ?, updated_at = ? WHERE id = ? AND is_deleted = 0");
+  db.exec("BEGIN");
+  try {
+    orderedIds.forEach((id, index) => update.run(index, now, id));
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return listCustomFolders();
 }
 
 function rowToRule(row) {
@@ -1543,6 +1566,7 @@ function exportCustomFolders() {
   return getDb().prepare("SELECT * FROM custom_folders").all().map((row) => ({
     id: row.id,
     name: row.name,
+    sort_order: Number(row.sort_order || 0),
     is_deleted: Boolean(row.is_deleted),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -1553,10 +1577,11 @@ function mergeRemoteCustomFolders(rows) {
   const db = getDb();
   const select = db.prepare("SELECT updated_at FROM custom_folders WHERE id = ?");
   const upsert = db.prepare(`
-    INSERT INTO custom_folders (id, name, is_deleted, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO custom_folders (id, name, sort_order, is_deleted, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
+      sort_order = excluded.sort_order,
       is_deleted = excluded.is_deleted,
       created_at = excluded.created_at,
       updated_at = excluded.updated_at
@@ -1571,6 +1596,7 @@ function mergeRemoteCustomFolders(rows) {
       upsert.run(
         String(row.id),
         String(row.name).trim(),
+        Number(row.sort_order || 0),
         Number(Boolean(row.is_deleted)),
         row.created_at || row.updated_at,
         row.updated_at,
@@ -1876,6 +1902,7 @@ module.exports = {
   mergeRemoteRows,
   mergeRemoteRules,
   mergeRemoteTemplates,
+  reorderCustomFolders,
   resetSendingOutbox,
   restoreDatabaseBackup,
   retryOutbox,

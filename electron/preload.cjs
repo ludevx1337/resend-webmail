@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("maildesk", {
   unblockSender: (email) => ipcRenderer.invoke("maildesk:blocked-remove", email),
   listCustomFolders: () => ipcRenderer.invoke("maildesk:folders-list"),
   saveCustomFolder: (folder) => ipcRenderer.invoke("maildesk:folder-save", folder),
+  reorderCustomFolders: (ids) => ipcRenderer.invoke("maildesk:folders-reorder", ids),
   deleteCustomFolder: (id) => ipcRenderer.invoke("maildesk:folder-delete", id),
   listRules: () => ipcRenderer.invoke("maildesk:rules-list"),
   saveRule: (rule) => ipcRenderer.invoke("maildesk:rule-save", rule),

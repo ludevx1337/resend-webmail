@@ -96,6 +96,14 @@ function popupMailContextMenu(event, payload) {
     { label: "Répondre", click: () => send("reply") },
     { label: "Répondre à tous", click: () => send("reply-all") },
     { label: "Transférer", click: () => send("forward") },
+    {
+      label: "Créer une règle",
+      submenu: [
+        { label: "Depuis cet expéditeur…", click: () => send("create-rule-from") },
+        { label: "Objet contient…", click: () => send("create-rule-subject") },
+        { label: "Pour ce destinataire…", click: () => send("create-rule-to") },
+      ],
+    },
     { type: "separator" },
     { label: payload.isRead ? "Marquer comme non lu" : "Marquer comme lu", click: () => send(payload.isRead ? "mark-unread" : "mark-read") },
     { label: payload.isStarred ? "Retirer des favoris" : "Ajouter aux favoris", click: () => send("toggle-star") },

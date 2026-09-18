@@ -18,12 +18,15 @@ import {
   Folder as FolderIcon,
   FolderPlus,
   Forward,
+  GripVertical,
+  HelpCircle,
   Inbox,
   Mail,
   MailOpen,
   Menu,
   MoreHorizontal,
   Paperclip,
+  Palette,
   Pin,
   Plus,
   Printer,
@@ -54,6 +57,8 @@ type Folder = SystemFolder | `custom:${string}`;
 type ViewFilter = "all" | "unread" | "read" | "starred" | "flagged" | "pinned";
 type SortDirection = "newest" | "oldest";
 type GroupMode = "outlook" | "day" | "week" | "month" | "none";
+type ReadingTab = "mail" | "compose";
+type ComposeKind = "new" | "reply" | "replyAll" | "forward" | "draft";
 
 type MailItem = {
   id: string;
@@ -178,11 +183,13 @@ type CalendarEventEntry = {
   updatedAt: string;
 };
 
-type SettingsTab = "account" | "sending" | "rules" | "templates" | "windows" | "data" | "supabase" | "updates";
+type SettingsTab = "account" | "sending" | "refresh" | "appearance" | "rules" | "templates" | "windows" | "data" | "supabase" | "updates";
 
 type SettingsBaseline = {
   account: string;
   sending: string;
+  refresh: string;
+  appearance: string;
   rules: string;
   templates: string;
   windows: string;
@@ -193,6 +200,7 @@ type SettingsBaseline = {
 type CustomFolderEntry = {
   id: string;
   name: string;
+  sortOrder: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -220,6 +228,42 @@ const EMPTY_COMPOSE: ComposeState = {
   html: "",
   attachments: [],
 };
+
+const REFRESH_INTERVALS = [5, 10, 30, 60, 300, 600, 1800, 3600] as const;
+const THEME_PRESETS = [
+  { name: "Outlook", color: "#0f6cbd" },
+  { name: "Violet", color: "#7c3aed" },
+  { name: "Émeraude", color: "#059669" },
+  { name: "Orange", color: "#ea580c" },
+  { name: "Rose", color: "#db2777" },
+  { name: "Ardoise", color: "#475569" },
+] as const;
+
+function normalizeThemeColor(value: string) {
+  const color = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : "#0f6cbd";
+}
+
+function refreshIntervalLabel(seconds: number) {
+  if (seconds < 60) return `${seconds} s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  return "1 h";
+}
+
+function refreshIntervalIndex(seconds: number) {
+  const exact = REFRESH_INTERVALS.indexOf(seconds as (typeof REFRESH_INTERVALS)[number]);
+  if (exact >= 0) return exact;
+  let closest = 0;
+  let distance = Number.POSITIVE_INFINITY;
+  REFRESH_INTERVALS.forEach((value, index) => {
+    const nextDistance = Math.abs(value - seconds);
+    if (nextDistance < distance) {
+      distance = nextDistance;
+      closest = index;
+    }
+  });
+  return closest;
+}
 
 const MAIL_CATEGORIES = [
   { id: "red", label: "Rouge" },
@@ -578,11 +622,17 @@ export default function Home() {
   const [snoozedIds, setSnoozedIds] = useState<string[]>([]);
   const [deletedIds, setDeletedIds] = useState<string[]>([]);
   const [composeOpen, setComposeOpen] = useState(false);
+  const [activeReadingTab, setActiveReadingTab] = useState<ReadingTab>("mail");
+  const [composeKind, setComposeKind] = useState<ComposeKind>("new");
   const [compose, setCompose] = useState<ComposeState>(EMPTY_COMPOSE);
   const [sending, setSending] = useState(false);
   const [showCc, setShowCc] = useState(false);
   const [undoSendSeconds, setUndoSendSeconds] = useState(10);
   const [settingsUndoSendSeconds, setSettingsUndoSendSeconds] = useState(10);
+  const [refreshIntervalSeconds, setRefreshIntervalSeconds] = useState(60);
+  const [settingsRefreshIntervalSeconds, setSettingsRefreshIntervalSeconds] = useState(60);
+  const [themeColor, setThemeColor] = useState("#0f6cbd");
+  const [settingsThemeColor, setSettingsThemeColor] = useState("#0f6cbd");
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduledAt, setScheduledAt] = useState("");
   const [undoSend, setUndoSend] = useState<UndoSendState | null>(null);
@@ -619,6 +669,8 @@ export default function Home() {
   const [settingsBaselines, setSettingsBaselines] = useState<SettingsBaseline>({
     account: "",
     sending: "",
+    refresh: "",
+    appearance: "",
     rules: "",
     templates: "",
     windows: "",
@@ -627,6 +679,9 @@ export default function Home() {
   });
   const [rules, setRules] = useState<MailRuleEntry[]>([]);
   const [customFolders, setCustomFolders] = useState<CustomFolderEntry[]>([]);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [draggedFolderId, setDraggedFolderId] = useState("");
   const [ruleFolderId, setRuleFolderId] = useState("");
   const [searchHelpOpen, setSearchHelpOpen] = useState(false);
   const [blockedSenders, setBlockedSenders] = useState<Array<{ email: string; createdAt: string }>>([]);
@@ -665,6 +720,7 @@ export default function Home() {
   const searchRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const knownInboxIdsRef = useRef<Set<string> | null>(null);
+  const refreshRunningRef = useRef(false);
 
   const allMail = useMemo(() => {
     const byId = new Map<string, MailItem>();
@@ -680,6 +736,8 @@ export default function Home() {
       apiKeyChanged: Boolean(settingsApiKey.trim()),
     }),
     sending: JSON.stringify({ undoSendSeconds: settingsUndoSendSeconds }),
+    refresh: JSON.stringify({ refreshIntervalSeconds: settingsRefreshIntervalSeconds }),
+    appearance: JSON.stringify({ themeColor: normalizeThemeColor(settingsThemeColor) }),
     rules: JSON.stringify({
       name: ruleName,
       field: ruleField,
@@ -758,6 +816,11 @@ export default function Home() {
   }, [contactSearch, contacts]);
 
   useEffect(() => {
+    const activeColor = normalizeThemeColor(settingsOpen ? settingsThemeColor : themeColor);
+    document.documentElement.style.setProperty("--brand", activeColor);
+  }, [settingsOpen, settingsThemeColor, themeColor]);
+
+  useEffect(() => {
     const frame = requestAnimationFrame(() => {
       void (async () => {
         if (window.maildesk) {
@@ -791,6 +854,9 @@ export default function Home() {
             setIdentities(loadedIdentities);
             setSignature(defaultIdentity?.signature || currentSettings.signature || "");
             setUndoSendSeconds(Number(currentSettings.undoSendSeconds ?? 10));
+            setRefreshIntervalSeconds(Math.max(5, Math.min(3600, Number(currentSettings.refreshIntervalSeconds ?? 60))));
+            setThemeColor(normalizeThemeColor(currentSettings.themeColor || "#0f6cbd"));
+            setSettingsThemeColor(normalizeThemeColor(currentSettings.themeColor || "#0f6cbd"));
             setDatabasePath(currentSettings.databasePath || "");
             if (storedDraft) {
               setCurrentDraftId(storedDraft.id);
@@ -953,6 +1019,17 @@ export default function Home() {
     }, 60_000);
     return () => window.clearInterval(timer);
   }, [snoozedIds.length]);
+
+  useEffect(() => {
+    const intervalMs = Math.max(5, Math.min(3600, refreshIntervalSeconds)) * 1000;
+    const timer = window.setInterval(() => {
+      if (document.hidden || !navigator.onLine || refreshRunningRef.current) return;
+      void refresh({ background: true });
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+    // refresh is intentionally recreated with the current mailbox state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshIntervalSeconds]);
 
   useEffect(() => {
     if (!undoSend) return;
@@ -1118,9 +1195,14 @@ export default function Home() {
     void window.maildesk.syncNow();
   }
 
-  async function refresh() {
-    setLoading(true);
-    setError("");
+  async function refresh(options: { background?: boolean } = {}) {
+    const background = Boolean(options.background);
+    if (refreshRunningRef.current) return;
+    refreshRunningRef.current = true;
+    if (!background) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const [inboxRes, sentRes] = await Promise.all([
         fetch("/api/mail/inbox", { cache: "no-store" }),
@@ -1194,7 +1276,8 @@ export default function Home() {
         setError(err instanceof Error ? err.message : "Erreur de chargement");
       }
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
+      refreshRunningRef.current = false;
     }
   }
 
@@ -1268,6 +1351,7 @@ export default function Home() {
   }
 
   async function openMail(mail: MailItem) {
+    setActiveReadingTab("mail");
     setExpandedThreadIds([mail.id]);
     setReadIds((ids) => addId(ids, mail.id));
     persistLocalState(mail.id, { isRead: true });
@@ -1436,13 +1520,16 @@ export default function Home() {
   }
 
   function restoreMail(mail: MailItem) {
+    const targetFolder = sourceFolder(mail) === "sent" ? "sent" : "inbox";
     setTrashedIds((ids) => removeId(ids, mail.id));
     setArchivedIds((ids) => removeId(ids, mail.id));
     setJunkIds((ids) => removeId(ids, mail.id));
     setSnoozedIds((ids) => removeId(ids, mail.id));
+    setInbox((items) => items.map((item) => item.id === mail.id ? { ...item, localFolder: targetFolder } : item));
+    setSent((items) => items.map((item) => item.id === mail.id ? { ...item, localFolder: targetFolder } : item));
     updateMailMetadata(mail.id, { snoozedUntil: undefined });
-    persistLocalState(mail.id, { folder: sourceFolder(mail) === "sent" ? "sent" : "inbox", snoozedUntil: null, isDeleted: false });
-    if (folder === "trash" || folder === "archive") clearReadingPane(mail.id);
+    persistLocalState(mail.id, { folder: targetFolder, snoozedUntil: null, isDeleted: false });
+    if (folder === "trash" || folder === "archive" || folder.startsWith("custom:")) clearReadingPane(mail.id);
   }
 
   function deleteForever(mail: MailItem) {
@@ -1510,7 +1597,9 @@ export default function Home() {
       attachments: draft.attachments ?? [],
     });
     setShowCc(Boolean(draft.cc || draft.bcc));
+    setComposeKind("draft");
     setComposeOpen(true);
+    setActiveReadingTab("compose");
     setSidebarOpen(false);
   }
 
@@ -1521,18 +1610,18 @@ export default function Home() {
       setCurrentDraftId("");
       setCompose({ ...EMPTY_COMPOSE, attachments: [] });
       setComposeOpen(false);
+      setActiveReadingTab("mail");
     }
   }
 
-  function startCompose() {
-    const existingSignature = signatureForSender(identities, compose.from, signature);
-    if (!composeOpen && hasComposeContent(compose, existingSignature)) {
-      setShowCc(Boolean(compose.cc || compose.bcc));
-      setComposeOpen(true);
-      setSidebarOpen(false);
-      return;
-    }
+  async function preserveComposeBeforeSwitch() {
+    if (!composeOpen) return;
+    const composeSignature = signatureForSender(identities, compose.from, signature);
+    if (hasComposeContent(compose, composeSignature)) await saveCurrentDraft();
+  }
 
+  async function startCompose() {
+    await preserveComposeBeforeSwitch();
     const defaultIdentity = defaultIdentityOf(identities, settingsFrom, signature);
     const composeSignature = defaultIdentity?.signature || signature;
     setCurrentDraftId(globalThis.crypto.randomUUID());
@@ -1544,7 +1633,9 @@ export default function Home() {
       attachments: [],
     });
     setShowCc(false);
+    setComposeKind("new");
     setComposeOpen(true);
+    setActiveReadingTab("compose");
     setSidebarOpen(false);
   }
 
@@ -1577,6 +1668,41 @@ export default function Home() {
       });
     }
     setComposeOpen(false);
+    setActiveReadingTab("mail");
+  }
+
+  async function saveCurrentDraft() {
+    const composeSignature = signatureForSender(identities, compose.from, signature);
+    if (!hasComposeContent(compose, composeSignature)) {
+      setError("Ajoutez un destinataire, un objet ou du contenu avant de créer le brouillon.");
+      return;
+    }
+
+    const draftId = currentDraftId || globalThis.crypto.randomUUID();
+    const draft = {
+      id: draftId,
+      from: compose.from,
+      to: compose.to,
+      cc: compose.cc,
+      bcc: compose.bcc,
+      subject: compose.subject,
+      text: compose.text,
+      html: compose.html,
+      replyToMessageId: compose.replyToMessageId,
+      replyReferences: compose.replyReferences,
+      attachments: compose.attachments,
+    };
+
+    if (window.maildesk) {
+      const saved = await window.maildesk.saveDraft(draft);
+      setCurrentDraftId(saved.id);
+      setDrafts((items) => [saved as DraftEntry, ...items.filter((item) => item.id !== saved.id)]);
+      setError("Brouillon enregistré.");
+    } else {
+      localStorage.setItem(STORAGE.draft, JSON.stringify({ ...draft, attachments: [] }));
+      setCurrentDraftId(draftId);
+      setError("Brouillon enregistré localement.");
+    }
   }
 
   async function loadConversationForExport() {
@@ -1639,6 +1765,7 @@ export default function Home() {
   }
 
   async function startReplyFor(mail: MailItem, replyAll = false) {
+    await preserveComposeBeforeSwitch();
     const message = await getMailDetail(mail, false);
     if (!message) return;
     const fromSentFolder = sourceFolder(mail) === "sent";
@@ -1668,10 +1795,13 @@ export default function Home() {
       attachments: [],
     });
     setShowCc(replyAll && Boolean(cc));
+    setComposeKind(replyAll ? "replyAll" : "reply");
     setComposeOpen(true);
+    setActiveReadingTab("compose");
   }
 
   async function startForwardFor(mail: MailItem) {
+    await preserveComposeBeforeSwitch();
     const message = await getMailDetail(mail, false);
     if (!message) return;
     const original = message.text?.trim() || "[Message HTML original]";
@@ -1705,7 +1835,9 @@ export default function Home() {
       attachments: [],
     });
     setShowCc(false);
+    setComposeKind("forward");
     setComposeOpen(true);
+    setActiveReadingTab("compose");
   }
 
   async function handleNativeAction(payload: { action: string; id?: string; folder?: string; to?: string; cc?: string; bcc?: string; subject?: string; text?: string }) {
@@ -1727,7 +1859,9 @@ export default function Home() {
         attachments: [],
       });
       setShowCc(Boolean(payload.cc || payload.bcc));
+      setComposeKind("new");
       setComposeOpen(true);
+      setActiveReadingTab("compose");
       setSidebarOpen(false);
       return;
     }
@@ -1821,6 +1955,15 @@ export default function Home() {
       case "forward":
         await startForwardFor(mail);
         break;
+      case "create-rule-from":
+        await openRuleBuilderFromMail(mail, "from");
+        break;
+      case "create-rule-subject":
+        await openRuleBuilderFromMail(mail, "subject");
+        break;
+      case "create-rule-to":
+        await openRuleBuilderFromMail(mail, "to");
+        break;
       case "print":
         await printCurrentConversation();
         break;
@@ -1870,6 +2013,28 @@ export default function Home() {
         restoreSnoozedMail(mail);
         break;
     }
+  }
+
+  async function openRuleBuilderFromMail(mail: MailItem, field: MailRuleEntry["field"] = "from") {
+    await openSettings();
+    const value = field === "from"
+      ? senderEmail(mail.from)
+      : field === "subject"
+        ? (mail.subject || "")
+        : (mail.to?.[0] || "");
+    setSettingsTab("rules");
+    setRuleName(field === "from" ? `Courrier de ${senderName(mail.from)}` : "");
+    setRuleField(field);
+    setRuleOperator(field === "from" ? "equals" : "contains");
+    setRuleValue(value);
+    if (customFolders.length > 0) {
+      setRuleAction("move_to_folder");
+      setRuleFolderId(customFolders[0].id);
+    } else {
+      setRuleAction("archive");
+      setRuleFolderId("");
+    }
+    setSettingsMessage("Règle préremplie depuis le message. Choisissez l’action ou le dossier puis enregistrez-la avec la disquette.");
   }
 
   async function showContextMenu(mail: MailItem) {
@@ -1964,7 +2129,9 @@ export default function Home() {
       attachments: item.attachments ?? [],
     });
     setShowCc(Boolean(item.cc || item.bcc));
+    setComposeKind("draft");
     setComposeOpen(true);
+    setActiveReadingTab("compose");
     setError("Message retiré de la boîte d’envoi et rouvert pour modification.");
   }
 
@@ -1999,6 +2166,7 @@ export default function Home() {
     setOutbox(await window.maildesk.getOutbox() as OutboxEntry[]);
     setCompose({ ...EMPTY_COMPOSE, attachments: [] });
     setComposeOpen(false);
+    setActiveReadingTab("mail");
     setScheduleOpen(false);
 
     if (undoable) {
@@ -2033,7 +2201,9 @@ export default function Home() {
       attachments: item.attachments ?? [],
     });
     setShowCc(Boolean(item.cc || item.bcc));
+    setComposeKind("draft");
     setComposeOpen(true);
+    setActiveReadingTab("compose");
     setUndoSend(null);
     setError("Envoi annulé. Le message a été rouvert.");
   }
@@ -2110,6 +2280,7 @@ export default function Home() {
         setOutbox(await window.maildesk.getOutbox() as OutboxEntry[]);
         setCompose({ ...EMPTY_COMPOSE, attachments: [] });
         setComposeOpen(false);
+        setActiveReadingTab("mail");
         setFolder("outbox");
         setError("Connexion indisponible ou service temporairement inaccessible : message placé dans la boîte d’envoi.");
         return;
@@ -2147,6 +2318,7 @@ export default function Home() {
         localStorage.removeItem(STORAGE.draft);
       }
       setComposeOpen(false);
+      setActiveReadingTab("mail");
       await refresh();
       setFolder("sent");
     } catch (err) {
@@ -2156,18 +2328,54 @@ export default function Home() {
     }
   }
 
-  async function createCustomFolder() {
+  function createCustomFolder() {
+    if (!window.maildesk) {
+      setError("Les dossiers personnalisés sont disponibles dans l’application Windows.");
+      return;
+    }
+    setNewFolderName("");
+    setNewFolderOpen(true);
+  }
+
+  async function submitCustomFolder() {
     if (!window.maildesk) return;
-    const name = window.prompt("Nom du nouveau dossier");
-    if (!name?.trim()) return;
+    const name = newFolderName.trim();
+    if (!name) return;
     try {
-      const created = await window.maildesk.saveCustomFolder({ name: name.trim() });
-      setCustomFolders(await window.maildesk.listCustomFolders() as CustomFolderEntry[]);
+      const created = await window.maildesk.saveCustomFolder({
+        name,
+        sortOrder: customFolders.length,
+      });
+      const folders = await window.maildesk.listCustomFolders() as CustomFolderEntry[];
+      setCustomFolders(folders);
+      setNewFolderName("");
+      setNewFolderOpen(false);
       setFolder(`custom:${created.id}`);
       setSidebarOpen(false);
       void window.maildesk.syncNow();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Impossible de créer le dossier.");
+    }
+  }
+
+  async function reorderFolder(sourceId: string, targetId: string) {
+    if (!window.maildesk || !sourceId || sourceId === targetId) return;
+    const sourceIndex = customFolders.findIndex((item) => item.id === sourceId);
+    const targetIndex = customFolders.findIndex((item) => item.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const reordered = [...customFolders];
+    const [moved] = reordered.splice(sourceIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+    setCustomFolders(reordered.map((item, index) => ({ ...item, sortOrder: index })));
+    try {
+      const saved = await window.maildesk.reorderCustomFolders(reordered.map((item) => item.id));
+      setCustomFolders(saved as CustomFolderEntry[]);
+      void window.maildesk.syncNow();
+    } catch (err) {
+      setCustomFolders(await window.maildesk.listCustomFolders() as CustomFolderEntry[]);
+      setError(err instanceof Error ? err.message : "Impossible de déplacer le dossier.");
+    } finally {
+      setDraggedFolderId("");
     }
   }
 
@@ -2258,7 +2466,9 @@ export default function Home() {
     });
     setShowCc(false);
     setContactsOpen(false);
+    setComposeKind("new");
     setComposeOpen(true);
+    setActiveReadingTab("compose");
   }
 
   function editContactEntry(contact: ContactEntry) {
@@ -2712,6 +2922,11 @@ export default function Home() {
       : (result.error || "Impossible d’ouvrir le dossier de données."));
   }
 
+  function closeSettings() {
+    setSettingsThemeColor(themeColor);
+    setSettingsOpen(false);
+  }
+
   async function openSettings() {
     setSettingsMessage("");
     setUpdateStatusMessage("");
@@ -2748,6 +2963,8 @@ export default function Home() {
         const loadedFrom = defaultIdentity?.from || current.from;
         const loadedSignature = defaultIdentity?.signature || current.signature || "";
         const loadedUndo = Number(current.undoSendSeconds ?? 10);
+        const loadedRefresh = Math.max(5, Math.min(3600, Number(current.refreshIntervalSeconds ?? 60)));
+        const loadedTheme = normalizeThemeColor(current.themeColor || "#0f6cbd");
         const loadedSupabaseUrl = current.supabaseUrl || "";
         const loadedProjectRef = current.supabaseProjectRef || "";
         const loadedUpdateEnabled = Boolean(current.autoUpdateEnabled);
@@ -2762,6 +2979,9 @@ export default function Home() {
         setSettingsHasSupabaseKey(current.hasSupabaseKey);
         setSettingsHasSupabaseManagementToken(current.hasSupabaseManagementToken);
         setSettingsUndoSendSeconds(loadedUndo);
+        setSettingsRefreshIntervalSeconds(loadedRefresh);
+        setThemeColor(loadedTheme);
+        setSettingsThemeColor(loadedTheme);
         setSettingsAutoUpdateEnabled(loadedUpdateEnabled);
         setSettingsUpdateManifestUrl(loadedManifestUrl);
         setSettingsStartWithWindows(windowsIntegration.openAtLogin);
@@ -2779,6 +2999,8 @@ export default function Home() {
             apiKeyChanged: false,
           }),
           sending: JSON.stringify({ undoSendSeconds: loadedUndo }),
+          refresh: JSON.stringify({ refreshIntervalSeconds: loadedRefresh }),
+          appearance: JSON.stringify({ themeColor: loadedTheme }),
           rules: JSON.stringify({
             name: "",
             field: "from",
@@ -2999,6 +3221,32 @@ export default function Home() {
         return;
       }
 
+      if (settingsTab === "refresh") {
+        const result = await window.maildesk.saveSettings({ refreshIntervalSeconds: settingsRefreshIntervalSeconds });
+        const savedRefresh = Math.max(5, Math.min(3600, Number(result.refreshIntervalSeconds ?? settingsRefreshIntervalSeconds)));
+        setRefreshIntervalSeconds(savedRefresh);
+        setSettingsRefreshIntervalSeconds(savedRefresh);
+        setSettingsBaselines((current) => ({
+          ...current,
+          refresh: JSON.stringify({ refreshIntervalSeconds: savedRefresh }),
+        }));
+        setSettingsMessage(`Actualisation automatique réglée sur ${refreshIntervalLabel(savedRefresh)}.`);
+        return;
+      }
+
+      if (settingsTab === "appearance") {
+        const result = await window.maildesk.saveSettings({ themeColor: normalizeThemeColor(settingsThemeColor) });
+        const savedTheme = normalizeThemeColor(result.themeColor || settingsThemeColor);
+        setThemeColor(savedTheme);
+        setSettingsThemeColor(savedTheme);
+        setSettingsBaselines((current) => ({
+          ...current,
+          appearance: JSON.stringify({ themeColor: savedTheme }),
+        }));
+        setSettingsMessage("Thème couleur enregistré.");
+        return;
+      }
+
       if (settingsTab === "supabase") {
         const result = await window.maildesk.saveSettings({
           supabaseUrl: settingsSupabaseUrl,
@@ -3185,6 +3433,110 @@ export default function Home() {
     ? customFolders.find((item) => `custom:${item.id}` === folder)?.name || "Dossier"
     : systemFolderTitle[folder as SystemFolder];
 
+  const composeTabTitle = composeKind === "reply"
+    ? "Réponse"
+    : composeKind === "replyAll"
+      ? "Réponse à tous"
+      : composeKind === "forward"
+        ? "Transfert"
+        : composeKind === "draft"
+          ? "Brouillon"
+          : "Nouveau message";
+
+  function renderComposePane() {
+    return (
+      <div className="compose-pane">
+        <form className="compose-pane-form" onSubmit={sendMail}>
+          <div className="compose-pane-head">
+            <div>
+              <span className="eyebrow">{composeTabTitle}</span>
+              <strong>{compose.subject || (composeKind === "new" ? "Nouveau message" : composeTabTitle)}</strong>
+            </div>
+            <button type="button" className="compose-draft-button" onClick={() => void saveCurrentDraft()} title="Enregistrer comme brouillon">
+              <Save size={16} /> Brouillon
+            </button>
+          </div>
+          {identities.length > 0 && (
+            <div className="compose-field identity-field">
+              <span>De</span>
+              <select value={compose.from || defaultIdentityOf(identities, settingsFrom, signature)?.from || ""} onChange={(event) => changeComposeIdentity(event.target.value)}>
+                {identities.map((identity) => (
+                  <option key={identity.id} value={identity.from}>{identity.name ? `${identity.name} — ${identity.from}` : identity.from}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <RecipientInput
+            label="À"
+            required
+            value={compose.to}
+            onChange={(value) => setCompose({ ...compose, to: value })}
+            trailing={<button type="button" onClick={() => setShowCc((value) => !value)}>Cc/Cci</button>}
+          />
+          {showCc && <>
+            <RecipientInput label="Cc" value={compose.cc} onChange={(value) => setCompose({ ...compose, cc: value })} />
+            <RecipientInput label="Cci" value={compose.bcc} onChange={(value) => setCompose({ ...compose, bcc: value })} />
+          </>}
+          <div className="compose-field"><span>Objet</span><input value={compose.subject} onChange={(event) => setCompose({ ...compose, subject: event.target.value })} /></div>
+          {compose.attachments.length > 0 && (
+            <div className="compose-attachments">
+              {compose.attachments.map((attachment, index) => (
+                <span key={`${attachment.name}-${index}`}><Paperclip size={13} />{attachment.name}<small>{formatBytes(attachment.size)}</small><button type="button" onClick={() => setCompose((current) => ({ ...current, attachments: current.attachments.filter((_, itemIndex) => itemIndex !== index) }))}><X size={13} /></button></span>
+              ))}
+            </div>
+          )}
+          <RichTextEditor
+            value={compose.html}
+            onChange={({ html, text }) => setCompose((current) => ({ ...current, html, text }))}
+          />
+          <div className="compose-actions">
+            <button className="send-button" disabled={sending} title={undoSendSeconds > 0 && typeof window !== "undefined" && window.maildesk ? `Envoi différé de ${undoSendSeconds} s pour permettre l’annulation` : "Envoyer maintenant"}>
+              <Send size={16} /> {sending ? "Envoi..." : "Envoyer"}
+            </button>
+            {typeof window !== "undefined" && window.maildesk && (
+              <div className="schedule-send-wrap">
+                <button type="button" className="icon-button" onClick={openSchedulePicker} title="Envoyer plus tard"><Clock3 size={18} /></button>
+                {scheduleOpen && (
+                  <div className="schedule-popover">
+                    <strong>Envoyer plus tard</strong>
+                    <input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} />
+                    <div>
+                      <button type="button" onClick={() => setScheduleOpen(false)}>Annuler</button>
+                      <button type="button" className="primary" onClick={() => void scheduleCurrentMail()}>Programmer</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {templates.length > 0 && (
+              <label className="quick-template-picker" title="Modèle / réponse rapide">
+                <Zap size={17} />
+                <select
+                  value=""
+                  onChange={(event) => {
+                    const template = templates.find((item) => item.id === event.target.value);
+                    if (template) applyTemplate(template);
+                  }}
+                >
+                  <option value="">Réponse rapide...</option>
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.shortcut ? `${template.shortcut} — ` : ""}{template.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <button type="button" className="icon-button" onClick={() => void addAttachments()} title="Ajouter une pièce jointe"><Paperclip size={18} /></button>
+            <button type="button" className="icon-button draft-save-icon" onClick={() => void saveCurrentDraft()} title="Créer / mettre à jour le brouillon"><Save size={18} /></button>
+            <span className="draft-state">{typeof window !== "undefined" && window.maildesk ? "Sauvegarde automatique active · disquette pour enregistrer maintenant" : "Brouillon local"}</span>
+          </div>
+          <input ref={fileInputRef} className="hidden-file-input" type="file" multiple onChange={(event) => void handleBrowserFiles(event)} />
+        </form>
+      </div>
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -3227,7 +3579,6 @@ export default function Home() {
             </div>
           )}
         </div>
-        <button className="icon-button" onClick={() => void refresh()} aria-label="Actualiser"><RefreshCw size={18} /></button>
         <button className="icon-button" onClick={() => void openSettings()} aria-label="Paramètres"><Settings size={18} /></button>
         <div className="avatar">MD</div>
       </header>
@@ -3236,9 +3587,85 @@ export default function Home() {
         <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
           <button className="compose-button" onClick={startCompose}><Edit3 size={18} /> Nouveau message</button>
           <nav className="folder-nav">
-            <button className={folder === "inbox" ? "active" : ""} onClick={() => { setFolder("inbox"); setSidebarOpen(false); }}>
+            <button
+              className={folder === "inbox" ? "active" : ""}
+              onClick={() => { setFolder("inbox"); setSidebarOpen(false); }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const mailId = event.dataTransfer.getData("application/x-maildesk-mail-id");
+                const mail = allMail.find((item) => item.id === mailId);
+                if (mail) restoreMail(mail);
+              }}
+              title="Boîte de réception — déposez un mail ici pour le remettre dans la réception"
+            >
               <Inbox size={18} /><span>Boîte de réception</span>{unreadCount > 0 && <strong>{unreadCount}</strong>}
             </button>
+            <div className="custom-folder-heading">
+              <span>Dossiers</span>
+              <button type="button" onClick={createCustomFolder} title="Créer un dossier sous Boîte de réception"><FolderPlus size={15} /></button>
+            </div>
+            {newFolderOpen && (
+              <form className="custom-folder-create" onSubmit={(event) => { event.preventDefault(); void submitCustomFolder(); }}>
+                <FolderIcon size={16} />
+                <input
+                  autoFocus
+                  value={newFolderName}
+                  onChange={(event) => setNewFolderName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setNewFolderOpen(false);
+                      setNewFolderName("");
+                    }
+                  }}
+                  placeholder="Nom du dossier"
+                  maxLength={80}
+                />
+                <button type="submit" disabled={!newFolderName.trim()} title="Créer"><CheckSquare2 size={15} /></button>
+                <button type="button" onClick={() => { setNewFolderOpen(false); setNewFolderName(""); }} title="Annuler"><X size={14} /></button>
+              </form>
+            )}
+            {customFolders.map((customFolder) => {
+              const customFolderKey: Folder = `custom:${customFolder.id}`;
+              const count = allMail.filter((mail) => mail.localFolder === customFolderKey && !deletedIds.includes(mail.id)).length;
+              return (
+                <div
+                  draggable
+                  className={folder === customFolderKey ? "custom-folder-row active" : draggedFolderId === customFolder.id ? "custom-folder-row dragging" : "custom-folder-row"}
+                  key={customFolder.id}
+                  onDragStart={(event) => {
+                    setDraggedFolderId(customFolder.id);
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("application/x-maildesk-folder-id", customFolder.id);
+                  }}
+                  onDragEnd={() => setDraggedFolderId("")}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const sourceFolderId = event.dataTransfer.getData("application/x-maildesk-folder-id");
+                    const mailId = event.dataTransfer.getData("application/x-maildesk-mail-id");
+                    if (sourceFolderId) void reorderFolder(sourceFolderId, customFolder.id);
+                    else if (mailId) void moveMailToCustomFolder(mailId, customFolder.id);
+                  }}
+                >
+                  <span className="folder-drag-handle" title="Glisser pour réordonner"><GripVertical size={14} /></span>
+                  <button className="custom-folder-main" type="button" onClick={() => { setFolder(customFolderKey); setSidebarOpen(false); }}>
+                    <FolderIcon size={17} /><span>{customFolder.name}</span>{count > 0 && <em>{count}</em>}
+                  </button>
+                  <div className="custom-folder-actions">
+                    <button type="button" title="Renommer" onClick={() => void renameCustomFolder(customFolder)}><Edit3 size={13} /></button>
+                    <button type="button" title="Supprimer" onClick={() => void removeCustomFolder(customFolder)}><X size={13} /></button>
+                  </div>
+                </div>
+              );
+            })}
             <button className={folder === "starred" ? "active" : ""} onClick={() => { setFolder("starred"); setSidebarOpen(false); }}>
               <Star size={18} /><span>Favoris</span>
             </button>
@@ -3263,37 +3690,6 @@ export default function Home() {
             <button className={folder === "trash" ? "active" : ""} onClick={() => { setFolder("trash"); setSidebarOpen(false); }}>
               <Trash2 size={18} /><span>Corbeille</span>{trashCount > 0 && <em>{trashCount}</em>}
             </button>
-            <div className="custom-folder-heading">
-              <span>Mes dossiers</span>
-              <button type="button" onClick={() => void createCustomFolder()} title="Nouveau dossier"><FolderPlus size={15} /></button>
-            </div>
-            {customFolders.map((customFolder) => {
-              const customFolderKey: Folder = `custom:${customFolder.id}`;
-              const count = allMail.filter((mail) => mail.localFolder === customFolderKey && !deletedIds.includes(mail.id)).length;
-              return (
-                <div
-                  className={folder === customFolderKey ? "custom-folder-row active" : "custom-folder-row"}
-                  key={customFolder.id}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const mailId = event.dataTransfer.getData("application/x-maildesk-mail-id");
-                    if (mailId) void moveMailToCustomFolder(mailId, customFolder.id);
-                  }}
-                >
-                  <button className="custom-folder-main" type="button" onClick={() => { setFolder(customFolderKey); setSidebarOpen(false); }}>
-                    <FolderIcon size={17} /><span>{customFolder.name}</span>{count > 0 && <em>{count}</em>}
-                  </button>
-                  <div className="custom-folder-actions">
-                    <button type="button" title="Renommer" onClick={() => void renameCustomFolder(customFolder)}><Edit3 size={13} /></button>
-                    <button type="button" title="Supprimer" onClick={() => void removeCustomFolder(customFolder)}><X size={13} /></button>
-                  </div>
-                </div>
-              );
-            })}
             <button onClick={() => void openContacts()}>
               <ContactRound size={18} /><span>Contacts</span>
             </button>
@@ -3301,23 +3697,34 @@ export default function Home() {
               <CalendarDays size={18} /><span>Calendrier</span>
             </button>
           </nav>
-          <div className="shortcut-hint">
-            <span>Ctrl+N</span> Nouveau message
-            <span>Ctrl+R</span> Répondre
-            <span>Ctrl+5</span> Contacts
-            <span>Suppr</span> Corbeille
-          </div>
           <div className="sidebar-footer">
-            <div className="account-dot" />
-            <div><strong>Resend</strong><span>{typeof window !== "undefined" && window.maildesk ? "Client Windows" : "Mode navigateur"}</span></div>
+            <div className="resend-status">
+              <div className="account-dot" />
+              <div><strong>Resend</strong><span>{typeof window !== "undefined" && window.maildesk ? "Client Windows" : "Mode navigateur"}</span></div>
+            </div>
+            <details className="shortcut-help">
+              <summary title="Raccourcis clavier" aria-label="Afficher les raccourcis clavier"><HelpCircle size={18} /></summary>
+              <div className="shortcut-help-popover">
+                <strong>Raccourcis</strong>
+                <div><kbd>Ctrl+N</kbd><span>Nouveau message</span></div>
+                <div><kbd>Ctrl+R</kbd><span>Répondre</span></div>
+                <div><kbd>Ctrl+5</kbd><span>Contacts</span></div>
+                <div><kbd>Suppr</kbd><span>Corbeille</span></div>
+              </div>
+            </details>
           </div>
         </aside>
 
         <section className="message-list-pane">
           <div className="pane-heading">
-            <div>
-              <span className="eyebrow">Courrier</span>
-              <h1>{folderTitle}</h1>
+            <div className="pane-heading-main">
+              <button className="pane-refresh-button" type="button" onClick={() => void refresh()} title={`Actualiser maintenant · auto ${refreshIntervalLabel(refreshIntervalSeconds)}`}>
+                <RefreshCw size={17} />
+              </button>
+              <div>
+                <span className="eyebrow">Courrier</span>
+                <h1>{folderTitle}</h1>
+              </div>
             </div>
             <button className="icon-button" onClick={() => setSortDirection((value) => value === "newest" ? "oldest" : "newest")} title="Changer l'ordre de tri"><MoreHorizontal size={19} /></button>
           </div>
@@ -3555,7 +3962,29 @@ export default function Home() {
         </section>
 
         <section className="reading-pane">
-          {!selected ? (
+          {(selected || composeOpen) && <div className="reading-tabs">
+            {selected && (
+              <button
+                type="button"
+                className={activeReadingTab === "mail" ? "reading-tab active" : "reading-tab"}
+                onClick={() => setActiveReadingTab("mail")}
+                title={detail?.subject || selected.subject || "(Sans objet)"}
+              >
+                <Mail size={14} />
+                <span>{detail?.subject || selected.subject || "(Sans objet)"}</span>
+              </button>
+            )}
+            {composeOpen && (
+              <div className={activeReadingTab === "compose" ? "reading-tab compose-tab active" : "reading-tab compose-tab"}>
+                <button type="button" className="reading-tab-main" onClick={() => setActiveReadingTab("compose")}>
+                  <Edit3 size={14} />
+                  <span>{composeTabTitle}{compose.subject ? ` · ${compose.subject}` : ""}</span>
+                </button>
+                <button type="button" className="reading-tab-close" onClick={closeCompose} title="Fermer cet onglet et conserver le brouillon"><X size={13} /></button>
+              </div>
+            )}
+          </div>}
+          {activeReadingTab === "compose" && composeOpen ? renderComposePane() : !selected ? (
             folder === "outbox"
               ? <div className="reading-empty"><div className="mail-illustration"><Clock3 size={48} /></div><h2>Boîte d’envoi</h2><p>Les messages en attente sont renvoyés automatiquement. Cliquez sur un message pour le modifier, ou utilisez l’icône de retry.</p></div>
               : <div className="reading-empty"><div className="mail-illustration"><Mail size={48} /></div><h2>Sélectionnez un message</h2><p>Clic droit pour afficher toutes les actions, comme dans Outlook.</p></div>
@@ -3567,6 +3996,7 @@ export default function Home() {
                 <button onClick={() => void startReplyFor(detail)}><Reply size={17} /> Répondre</button>
                 <button onClick={() => void startReplyFor(detail, true)}><ReplyAll size={17} /> Répondre à tous</button>
                 <button onClick={() => void startForwardFor(detail)}><Forward size={17} /> Transférer</button>
+                <button onClick={() => void openRuleBuilderFromMail(detail, "from")} title="Créer une règle depuis ce message"><Zap size={17} /> Règle</button>
                 {typeof window !== "undefined" && window.maildesk && <button onClick={() => void window.maildesk?.openMessageWindow(detail.id)} title="Ouvrir dans une nouvelle fenêtre"><ExternalLink size={17} /> Fenêtre</button>}
                 <button onClick={() => void printCurrentConversation()} title="Imprimer la conversation"><Printer size={17} /> Imprimer</button>
                 <button onClick={() => void exportCurrentConversationPdf()} title="Exporter la conversation en PDF"><FileDown size={17} /> PDF</button>
@@ -3729,8 +4159,8 @@ export default function Home() {
         </section>
       </div>
 
-      {composeOpen && (
-        <div className="compose-window">
+      {false && composeOpen && (
+        <div className="compose-window legacy-compose-window">
           <div className="compose-header"><strong>{compose.replyToMessageId ? "Réponse" : compose.subject.toLowerCase().startsWith("tr:") ? "Transférer" : "Nouveau message"}</strong><button className="icon-button" onClick={closeCompose} title="Fermer et conserver le brouillon"><X size={18} /></button></div>
           <form onSubmit={sendMail}>
             {identities.length > 0 && (
@@ -3938,12 +4368,12 @@ export default function Home() {
       )}
 
       {settingsOpen && (
-        <div className="modal-backdrop" onMouseDown={() => setSettingsOpen(false)}>
+        <div className="modal-backdrop" onMouseDown={closeSettings}>
           <section className="settings-modal settings-modal-tabbed" onMouseDown={(event) => event.stopPropagation()}>
             <div className="settings-header settings-tabbed-header">
               <div><span className="eyebrow">Configuration</span><h2>Paramètres MailDesk</h2></div>
               <div className="settings-header-actions">
-                <button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} title="Fermer"><X size={18} /></button>
+                <button className="icon-button" type="button" onClick={closeSettings} title="Fermer"><X size={18} /></button>
               </div>
             </div>
 
@@ -3951,6 +4381,8 @@ export default function Home() {
               <aside className="settings-side-nav">
                 <button type="button" className={settingsTab === "account" ? "active" : ""} onClick={() => setSettingsTab("account")}><UserRound size={17} /><span><strong>Compte</strong><small>Identités & Resend</small></span></button>
                 <button type="button" className={settingsTab === "sending" ? "active" : ""} onClick={() => setSettingsTab("sending")}><Send size={17} /><span><strong>Envoi</strong><small>Délais & comportement</small></span></button>
+                <button type="button" className={settingsTab === "refresh" ? "active" : ""} onClick={() => setSettingsTab("refresh")}><RefreshCw size={17} /><span><strong>Actualisation</strong><small>Fréquence de relève</small></span></button>
+                <button type="button" className={settingsTab === "appearance" ? "active" : ""} onClick={() => setSettingsTab("appearance")}><Palette size={17} /><span><strong>Apparence</strong><small>Couleur du thème</small></span></button>
                 <button type="button" className={settingsTab === "rules" ? "active" : ""} onClick={() => setSettingsTab("rules")}><Zap size={17} /><span><strong>Règles</strong><small>Tri automatique</small></span></button>
                 <button type="button" className={settingsTab === "templates" ? "active" : ""} onClick={() => setSettingsTab("templates")}><FileText size={17} /><span><strong>Modèles</strong><small>Réponses rapides</small></span></button>
                 <button type="button" className={settingsTab === "windows" ? "active" : ""} onClick={() => setSettingsTab("windows")}><Settings size={17} /><span><strong>Windows</strong><small>Intégration système</small></span></button>
@@ -3992,6 +4424,82 @@ export default function Home() {
                     <div className="send-settings">
                       <label><span>Délai pour annuler l’envoi</span><select value={settingsUndoSendSeconds} onChange={(event) => setSettingsUndoSendSeconds(Number(event.target.value))}><option value={0}>Désactivé — envoyer immédiatement</option><option value={5}>5 secondes</option><option value={10}>10 secondes</option><option value={20}>20 secondes</option><option value={30}>30 secondes</option></select></label>
                       <p>« Envoyer plus tard » reste disponible indépendamment de ce délai.</p>
+                    </div>
+                  </section>
+                )}
+
+                {settingsTab === "refresh" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title">
+                      <div>
+                        <span className="eyebrow">Relève automatique</span>
+                        <h3>Actualisation de la boîte</h3>
+                        <p>MailDesk vérifie périodiquement les nouveaux messages sans bloquer l’interface.</p>
+                      </div>
+                      {settingsPanelSaveButton("refresh")}
+                    </div>
+                    <div className="refresh-settings-card">
+                      <div className="refresh-settings-value">
+                        <span>Fréquence actuelle</span>
+                        <strong>{refreshIntervalLabel(settingsRefreshIntervalSeconds)}</strong>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={REFRESH_INTERVALS.length - 1}
+                        step={1}
+                        value={refreshIntervalIndex(settingsRefreshIntervalSeconds)}
+                        onChange={(event) => setSettingsRefreshIntervalSeconds(REFRESH_INTERVALS[Number(event.target.value)])}
+                        title="Une fréquence très courte augmente fortement le nombre de requêtes vers Resend. 5 secondes est le minimum recommandé uniquement pour les tests."
+                      />
+                      <div className="refresh-scale">
+                        {REFRESH_INTERVALS.map((seconds) => <span key={seconds}>{refreshIntervalLabel(seconds)}</span>)}
+                      </div>
+                      <div className={settingsRefreshIntervalSeconds <= 10 ? "refresh-warning strong" : "refresh-warning"}>
+                        <RefreshCw size={16} />
+                        <span>
+                          {settingsRefreshIntervalSeconds <= 10
+                            ? "Attention : une relève toutes les 5–10 secondes génère beaucoup plus de requêtes. À réserver aux tests ou aux boîtes très actives."
+                            : "Plus l’intervalle est court, plus MailDesk interroge Resend fréquemment. 30 s à 1 min est un bon compromis pour un usage courant."}
+                        </span>
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+                {settingsTab === "appearance" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title">
+                      <div><span className="eyebrow">Personnalisation</span><h3>Thème couleur</h3><p>Choisissez une couleur MailDesk ou utilisez votre propre couleur.</p></div>
+                      {settingsPanelSaveButton("appearance")}
+                    </div>
+                    <div className="theme-settings-card">
+                      <div className="theme-preview" style={{ background: settingsThemeColor }}>
+                        <Image src="/logo_app_mail_resend_64.webp" width={34} height={34} alt="" />
+                        <div><strong>MailDesk</strong><span>Aperçu de la couleur principale</span></div>
+                      </div>
+                      <div className="theme-presets">
+                        {THEME_PRESETS.map((theme) => (
+                          <button
+                            key={theme.color}
+                            type="button"
+                            className={normalizeThemeColor(settingsThemeColor) === theme.color ? "active" : ""}
+                            onClick={() => setSettingsThemeColor(theme.color)}
+                            title={theme.name}
+                          >
+                            <span style={{ background: theme.color }} />
+                            <strong>{theme.name}</strong>
+                          </button>
+                        ))}
+                      </div>
+                      <label className="theme-custom-color">
+                        <span>Couleur personnalisée</span>
+                        <div>
+                          <input type="color" value={normalizeThemeColor(settingsThemeColor)} onChange={(event) => setSettingsThemeColor(event.target.value)} />
+                          <input value={settingsThemeColor} onChange={(event) => setSettingsThemeColor(event.target.value)} onBlur={() => setSettingsThemeColor(normalizeThemeColor(settingsThemeColor))} placeholder="#0f6cbd" />
+                        </div>
+                      </label>
+                      <div className="security-note"><Palette size={16} /><strong>Aperçu instantané</strong><span>La couleur est prévisualisée immédiatement. Fermez sans enregistrer pour revenir au thème précédent.</span></div>
                     </div>
                   </section>
                 )}
@@ -4086,7 +4594,7 @@ export default function Home() {
                     <div className="settings-panel-title"><div><span className="eyebrow">Application</span><h3>Mises à jour</h3><p>Manifest HTTPS + vérification SHA-256 avant installation.</p></div>{settingsPanelSaveButton("updates")}</div>
                     <label className="windows-option update-toggle"><input type="checkbox" checked={settingsAutoUpdateEnabled} onChange={(event) => setSettingsAutoUpdateEnabled(event.target.checked)} /><span><strong>Rechercher automatiquement les mises à jour</strong><small>Vérification au démarrage puis toutes les 6 heures.</small></span></label>
                     <label className="settings-field"><span>URL HTTPS du manifest latest.json</span><input value={settingsUpdateManifestUrl} onChange={(event) => setSettingsUpdateManifestUrl(event.target.value)} placeholder="https://votre-domaine.fr/maildesk/latest.json" /></label>
-                    <div className="update-manifest-example"><strong>Format attendu</strong><pre>{"{\n  \"version\": \"0.4.3\",\n  \"url\": \"https://votre-domaine.fr/MailDesk-Setup-0.4.3-x64.exe\",\n  \"sha256\": \"SHA256_DU_SETUP\",\n  \"notes\": \"Corrections et améliorations\"\n}"}</pre></div>
+                    <div className="update-manifest-example"><strong>Format attendu</strong><pre>{"{\n  \"version\": \"0.4.4\",\n  \"url\": \"https://votre-domaine.fr/MailDesk-Setup-0.4.4-x64.exe\",\n  \"sha256\": \"SHA256_DU_SETUP\",\n  \"notes\": \"Corrections et améliorations\"\n}"}</pre></div>
                     <div className="supabase-actions"><button type="button" className="primary-outline" onClick={() => void checkUpdatesNow()} disabled={checkingUpdates || !settingsUpdateManifestUrl.trim()}>{checkingUpdates ? "Vérification..." : "Vérifier maintenant"}</button>{updateReady && <button type="button" className="update-install-button" onClick={() => void installReadyUpdate()}>Installer la mise à jour</button>}</div>
                     {updateStatusMessage && <div className="settings-message">{updateStatusMessage}</div>}
                   </section>

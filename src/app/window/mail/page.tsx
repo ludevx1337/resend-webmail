@@ -84,6 +84,8 @@ export default function DetachedMailPage() {
 
     void (async () => {
       try {
+        const settings = await window.maildesk!.getSettings();
+        document.documentElement.style.setProperty("--brand", settings.themeColor || "#0f6cbd");
         let local = await window.maildesk!.getLocalMail(messageId) as MailDetail | null;
         if (!local) throw new Error("Message absent du cache local.");
 

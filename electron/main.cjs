@@ -40,6 +40,7 @@ const {
   listTemplates,
   markOutboxFailed,
   markOutboxSending,
+  reorderCustomFolders,
   resetSendingOutbox,
   restoreDatabaseBackup,
   retryOutbox,
@@ -1024,6 +1025,7 @@ ipcMain.handle("maildesk:blocked-remove", (_event, email) => unblockSender(email
 
 ipcMain.handle("maildesk:folders-list", () => listCustomFolders());
 ipcMain.handle("maildesk:folder-save", (_event, folder) => saveCustomFolder(folder));
+ipcMain.handle("maildesk:folders-reorder", (_event, ids) => reorderCustomFolders(ids));
 ipcMain.handle("maildesk:folder-delete", (_event, id) => deleteCustomFolder(id));
 
 ipcMain.handle("maildesk:rules-list", () => listRules());

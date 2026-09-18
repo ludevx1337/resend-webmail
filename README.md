@@ -36,18 +36,23 @@ MailDesk est un client e-mail Windows construit avec **Electron + Next.js + Type
 - liste de courrier Outlook-like avec regroupement **Outlook / jour / semaine / mois**, sections repliables et groupe **Épinglés** ;
 - sélection multiple activable avec sélection totale et actions groupées ;
 - drapeau **Important**, épingle persistante et suppression rapide directement sur chaque ligne ;
-- dossiers personnalisés SQLite/Supabase avec compteurs, renommage, suppression sûre, drag & drop et déplacement depuis le menu contextuel ;
+- dossiers personnalisés SQLite/Supabase affichés directement sous **Boîte de réception**, création inline, compteurs, renommage, suppression sûre et ordre manuel par glisser-déposer ;
 - carnet de contacts SQLite appris automatiquement depuis les correspondants, enrichi avec société, téléphone, tags, notes, favoris et édition complète ;
 - auto-complétion À/Cc/Cci classée par favoris, fréquence et récence, avec navigation clavier ;
 - modèles et réponses rapides persistés dans SQLite/Supabase et insérables directement depuis le composeur ;
 - calendrier local avec création/édition d'événements, participants, lieu, import ICS et export ICS ;
 - règles automatiques locales sur expéditeur, objet ou destinataire vers Archives, Favoris, Lu, Corbeille ou un dossier personnalisé ;
+- création de règle directement depuis un message (expéditeur, objet ou destinataire), préremplie dans l'onglet Règles ;
+- actualisation automatique configurable de **5 secondes à 1 heure**, sans clignotement de chargement en arrière-plan ;
+- onglets de lecture/rédaction dans le volet droit : mail courant non fermable + onglet Nouveau/Réponse/Transfert/Brouillon fermable ;
+- bouton disquette dans le composeur pour forcer immédiatement la création ou la mise à jour du brouillon ;
 - filtres et tri ;
 - menu contextuel Windows au clic droit ;
-- barre de menu Electron masquée ; l'interface conserve les raccourcis utiles sans menu natif visible ;
+- barre de menu Electron masquée ; l'interface conserve les raccourcis utiles sans menu natif visible, avec aide `?` à côté du statut Resend ;
 - multi-fenêtres : double-clic ou bouton **Fenêtre** pour détacher plusieurs messages simultanément ;
 - notifications Windows avec actions **Ouvrir** et **Marquer lu** ;
 - intégration Windows : démarrage à l'ouverture de session, gestionnaire `mailto:`, instance unique et compteur non lu dans l'infobulle du tray ;
+- thèmes couleur personnalisables avec préréglages et couleur hexadécimale libre, prévisualisés en direct puis sauvegardés dans les paramètres chiffrés ;
 - auto-update facultatif par manifest HTTPS, téléchargement du Setup et validation SHA-256 avant installation ;
 - sauvegarde/restauration SQLite complète depuis **Paramètres > Données**, avec copie de sécurité automatique avant restauration ;
 - accès direct au dossier de données local et affichage de la version installée ;
@@ -144,6 +149,8 @@ Les suppressions de règles et de dossiers utilisent des tombstones synchronisé
 
 Les règles actives s'exécutent lors de l'arrivée d'un nouveau message. Le bouton **Appliquer aux messages existants** permet volontairement un traitement rétroactif sans réexécuter les règles à chaque actualisation.
 
+Depuis un message reçu, **clic droit > Créer une règle** propose **Depuis cet expéditeur**, **Objet contient** ou **Pour ce destinataire**. Le formulaire Règles s'ouvre alors prérempli ; si des dossiers personnalisés existent, l'action **Déplacer vers un dossier** est directement disponible. Le bouton **Règle** du volet de lecture prépare aussi rapidement une règle sur l'expéditeur.
+
 ### Recherche locale et recherche avancée
 
 Une table virtuelle SQLite FTS5 est maintenue à partir de la table `messages`. La barre de recherche interroge donc localement le sujet, l'expéditeur, les destinataires, le corps HTML/texte et les métadonnées de pièces jointes. L'index est reconstruit automatiquement au démarrage pour assurer la migration depuis les anciennes versions.
@@ -170,6 +177,27 @@ Du texte libre peut être mélangé avec ces filtres, par exemple `contrat from:
 
 Les états `is:flagged` et `is:pinned` permettent aussi de retrouver les messages marqués importants ou épinglés.
 
+### Actualisation automatique
+
+Le bouton d'actualisation manuelle se trouve dans l'en-tête du panneau **Courrier**, immédiatement à gauche du nom du dossier courant (par exemple **Boîte de réception**). La relève automatique se règle dans **Paramètres > Actualisation** avec un curseur discret :
+
+- 5 s ;
+- 10 s ;
+- 30 s ;
+- 1 min ;
+- 5 min ;
+- 10 min ;
+- 30 min ;
+- 1 h.
+
+Une relève à 5–10 secondes est possible mais l'interface avertit qu'elle augmente fortement le nombre de requêtes. Les actualisations automatiques sont silencieuses (pas de skeleton de chargement), sont suspendues lorsque la fenêtre est masquée/hors ligne et déclenchent les notifications de nouveaux mails normalement.
+
+### Onglets de lecture et rédaction
+
+Le volet de lecture possède maintenant une barre d'onglets au-dessus de sa barre d'outils. L'onglet du mail sélectionné reste ouvert et ne comporte pas de bouton de fermeture. Un **Nouveau message**, une **Réponse**, une **Réponse à tous**, un **Transfert** ou un **Brouillon** ouvre un onglet de rédaction fermable à côté.
+
+Changer de mail ramène simplement sur l'onglet de lecture sans détruire la rédaction en cours. Fermer l'onglet de rédaction conserve le brouillon ; la disquette **Brouillon** permet de le sauvegarder immédiatement. Démarrer un nouveau message ne reprend plus le contenu du dernier transfert/réponse.
+
 ### Liste Outlook, regroupements et sélection multiple
 
 La liste de courrier peut être regroupée selon plusieurs modes :
@@ -184,9 +212,17 @@ Les sections peuvent être repliées avec leur chevron. L’action **Sélection*
 
 Chaque ligne dispose aussi d’actions rapides pour lu/non lu, drapeau **Important**, épingle et corbeille. Un message épinglé remonte dans la section **Épinglés**.
 
+### Apparence et thèmes
+
+L'onglet **Paramètres > Apparence** permet de personnaliser la couleur principale de MailDesk. Plusieurs préréglages sont fournis (Outlook, Violet, Émeraude, Orange, Rose et Ardoise) et un sélecteur permet d'utiliser n'importe quelle couleur hexadécimale.
+
+Le thème est prévisualisé immédiatement. La disquette de l'onglet enregistre la couleur dans les paramètres chiffrés ; fermer les paramètres sans enregistrer restaure le thème précédent. La couleur est également appliquée aux fenêtres de lecture détachées.
+
 ### Dossiers personnalisés
 
-La section **Mes dossiers** de la barre latérale permet de créer, renommer et supprimer des dossiers locaux. Un message peut être déplacé vers un dossier par drag & drop ou via **clic droit > Déplacer vers**.
+Les dossiers personnalisés apparaissent directement sous **Boîte de réception** dans la barre latérale. Le bouton **+ dossier** ouvre un champ de création inline : Entrée crée le dossier et Échap annule.
+
+Les dossiers peuvent être réordonnés par glisser-déposer. Cet ordre est conservé dans SQLite et synchronisé avec Supabase via le champ `sort_order`. Un message peut être déplacé vers un dossier en le faisant glisser sur le dossier ou via **clic droit > Déplacer vers**. Un mail déposé sur **Boîte de réception** est replacé dans la réception.
 
 La suppression d'un dossier replace automatiquement les messages reçus en Réception et les messages sortants dans Éléments envoyés. Les règles ciblant le dossier supprimé sont également désactivées par suppression synchronisée.
 
@@ -305,8 +341,8 @@ Format du manifest :
 
 ```json
 {
-  "version": "0.4.3",
-  "url": "https://votre-domaine.fr/MailDesk-Setup-0.4.3-x64.exe",
+  "version": "0.4.4",
+  "url": "https://votre-domaine.fr/MailDesk-Setup-0.4.4-x64.exe",
   "sha256": "SHA256_HEXADECIMAL_64_CARACTERES",
   "notes": "Corrections et améliorations"
 }
@@ -371,7 +407,7 @@ Sorties :
 
 ```text
 dist-electron\win-unpacked\MailDesk.exe
-release-0.4.2\MailDesk-Setup-0.4.2-x64.exe
+release-0.4.4\MailDesk-Setup-0.4.4-x64.exe
 ```
 
 ## Architecture
