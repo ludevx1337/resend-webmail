@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { app, safeStorage } = require("electron");
 
-const SETTINGS_VERSION = 4;
+const SETTINGS_VERSION = 5;
 
 function normalizeIdentities(value, legacyFrom = "", legacySignature = "") {
   const input = Array.isArray(value) ? value : [];
@@ -50,6 +50,8 @@ function defaults() {
     supabaseKey: "",
     supabaseProjectRef: "",
     supabaseManagementToken: "",
+    autoUpdateEnabled: false,
+    updateManifestUrl: "",
   };
 }
 
@@ -110,6 +112,8 @@ function effectiveSettings() {
     supabaseKey: stored.supabaseKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_ANON_KEY || "",
     supabaseProjectRef: stored.supabaseProjectRef || process.env.SUPABASE_PROJECT_REF || "",
     supabaseManagementToken: stored.supabaseManagementToken || process.env.SUPABASE_ACCESS_TOKEN || "",
+    autoUpdateEnabled: Boolean(stored.autoUpdateEnabled),
+    updateManifestUrl: stored.updateManifestUrl || process.env.MAILDESK_UPDATE_MANIFEST_URL || "",
   };
 }
 
@@ -156,6 +160,12 @@ function saveStoredSettings(input) {
     supabaseManagementToken: typeof input?.supabaseManagementToken === "string" && input.supabaseManagementToken.trim()
       ? input.supabaseManagementToken.trim()
       : current.supabaseManagementToken,
+    autoUpdateEnabled: typeof input?.autoUpdateEnabled === "boolean"
+      ? input.autoUpdateEnabled
+      : Boolean(current.autoUpdateEnabled),
+    updateManifestUrl: typeof input?.updateManifestUrl === "string"
+      ? input.updateManifestUrl.trim()
+      : current.updateManifestUrl,
   };
 
   if (!next.from || !next.identities.length) throw new Error("Au moins une identité d'envoi est obligatoire.");
@@ -199,6 +209,8 @@ function publicSettings() {
     hasApiKey: Boolean(current.apiKey),
     hasSupabaseKey: Boolean(current.supabaseKey),
     hasSupabaseManagementToken: Boolean(current.supabaseManagementToken),
+    autoUpdateEnabled: Boolean(current.autoUpdateEnabled),
+    updateManifestUrl: current.updateManifestUrl || "",
   };
 }
 

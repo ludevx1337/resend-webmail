@@ -16,9 +16,11 @@ const {
   createDatabaseBackup,
   databasePath,
   deleteActiveDraft,
+  deleteCalendarEvent,
   deleteContact,
   deleteCustomFolder,
   deleteDraft,
+  deleteTemplate,
   deleteOutbox,
   deleteRule,
   enqueueOutbox,
@@ -29,11 +31,13 @@ const {
   getNextOutboxAttemptAt,
   getSnapshot,
   listBlockedSenders,
+  listCalendarEvents,
   listContacts,
   listCustomFolders,
   listDrafts,
   listOutbox,
   listRules,
+  listTemplates,
   markOutboxFailed,
   markOutboxSending,
   resetSendingOutbox,
@@ -41,10 +45,12 @@ const {
   retryOutbox,
   runRulesOnInbox,
   saveActiveDraft,
+  saveCalendarEvent,
   saveContact,
   saveCustomFolder,
   saveDraft,
   saveRule,
+  saveTemplate,
   searchContacts,
   searchLocalMessages,
   unblockSender,
@@ -54,6 +60,7 @@ const {
 } = require("./db.cjs");
 const { syncWithSupabase } = require("./sync.cjs");
 const { initializeSupabase } = require("./supabase-provision.cjs");
+const { checkForUpdate } = require("./updater.cjs");
 
 let mainWindow = null;
 let setupWindow = null;
@@ -65,8 +72,12 @@ let isQuitting = false;
 let setupResolver = null;
 let outboxTimer = null;
 let outboxWakeTimer = null;
+let updateTimer = null;
 let outboxProcessing = false;
 let pendingMailto = null;
+const secondaryWindows = new Set();
+let pendingUpdateInstaller = "";
+let updateCheckInFlight = null;
 
 if (process.platform === "win32") {
   app.setAppUserModelId("com.devlow.maildesk");
@@ -196,23 +207,62 @@ function createTray() {
   tray.on("double-click", showMainWindow);
 }
 
+function sendMainAction(action, payload = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("maildesk:app-action", { action, ...payload });
+}
+
 function showNewMailNotification(payload) {
   if (!Notification.isSupported()) return false;
   const count = Math.max(1, Number(payload?.count) || 1);
+  const id = String(payload?.id || "");
   const notification = new Notification({
     title: count > 1 ? `${count} nouveaux messages` : (payload?.title || "Nouveau message"),
     body: count > 1 ? "De nouveaux messages sont arrivés dans MailDesk." : (payload?.body || "Vous avez reçu un nouveau message."),
     silent: false,
+    actions: id
+      ? [
+          { type: "button", text: "Ouvrir" },
+          { type: "button", text: "Marquer lu" },
+        ]
+      : [{ type: "button", text: "Ouvrir MailDesk" }],
+    closeButtonText: "Fermer",
   });
-  notification.on("click", showMainWindow);
+  notification.on("click", () => {
+    showMainWindow();
+    if (id) sendMainAction("open-mail-by-id", { id });
+  });
+  notification.on("action", (_event, actionIndex) => {
+    if (!id || actionIndex === 0) {
+      showMainWindow();
+      if (id) sendMainAction("open-mail-by-id", { id });
+      return;
+    }
+    if (actionIndex === 1) {
+      updateState(id, { isRead: true });
+      sendMainAction("notification-mark-read", { id });
+    }
+  });
   notification.show();
   return true;
 }
 
 function showOutboxNotification(title, body) {
   if (!Notification.isSupported()) return;
-  const notification = new Notification({ title, body, silent: false });
-  notification.on("click", showMainWindow);
+  const notification = new Notification({
+    title,
+    body,
+    silent: false,
+    actions: [{ type: "button", text: "Ouvrir la boîte d’envoi" }],
+  });
+  notification.on("click", () => {
+    showMainWindow();
+    sendMainAction("folder", { folder: "outbox" });
+  });
+  notification.on("action", () => {
+    showMainWindow();
+    sendMainAction("folder", { folder: "outbox" });
+  });
   notification.show();
 }
 
@@ -508,6 +558,146 @@ async function exportEmlDocument(payload = {}) {
   return { ok: true, canceled: false, path: result.filePath };
 }
 
+
+function decodeIcsText(value) {
+  return String(value || "")
+    .replace(/\\n/gi, "\n")
+    .replace(/\\,/g, ",")
+    .replace(/\\;/g, ";")
+    .replace(/\\\\/g, "\\");
+}
+
+function encodeIcsText(value) {
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/,/g, "\\,")
+    .replace(/;/g, "\\;");
+}
+
+function parseIcsDate(raw, allDay = false) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  if (/^\d{8}$/.test(value)) {
+    const year = Number(value.slice(0, 4));
+    const month = Number(value.slice(4, 6)) - 1;
+    const day = Number(value.slice(6, 8));
+    return new Date(year, month, day, 0, 0, 0, 0);
+  }
+  const match = value.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z?)$/);
+  if (!match) {
+    const fallback = new Date(value);
+    return Number.isNaN(fallback.getTime()) ? null : fallback;
+  }
+  const [, y, mo, d, h, mi, s, z] = match;
+  return z
+    ? new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)))
+    : new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+}
+
+function parseIcsEvents(raw) {
+  const unfolded = String(raw || "").replace(/\r?\n[ \t]/g, "");
+  const blocks = unfolded.match(/BEGIN:VEVENT[\s\S]*?END:VEVENT/gi) || [];
+  return blocks.map((block) => {
+    const lines = block.split(/\r?\n/);
+    const get = (name) => {
+      const line = lines.find((item) => item.toUpperCase().startsWith(name + ":") || item.toUpperCase().startsWith(name + ";"));
+      if (!line) return "";
+      return line.slice(line.indexOf(":") + 1);
+    };
+    const startLine = lines.find((item) => item.toUpperCase().startsWith("DTSTART"));
+    const endLine = lines.find((item) => item.toUpperCase().startsWith("DTEND"));
+    const allDay = Boolean(startLine && /VALUE=DATE/i.test(startLine));
+    const startAt = parseIcsDate(startLine ? startLine.slice(startLine.indexOf(":") + 1) : "", allDay);
+    let endAt = parseIcsDate(endLine ? endLine.slice(endLine.indexOf(":") + 1) : "", allDay);
+    if (!startAt) return null;
+    if (!endAt) endAt = new Date(startAt.getTime() + (allDay ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000));
+    const attendees = lines
+      .filter((item) => item.toUpperCase().startsWith("ATTENDEE"))
+      .map((item) => item.slice(item.indexOf(":") + 1).replace(/^mailto:/i, "").trim())
+      .filter(Boolean);
+    return {
+      title: decodeIcsText(get("SUMMARY")) || "Événement",
+      description: decodeIcsText(get("DESCRIPTION")),
+      location: decodeIcsText(get("LOCATION")),
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+      allDay,
+      attendees,
+      sourceUid: decodeIcsText(get("UID")),
+    };
+  }).filter(Boolean);
+}
+
+function formatIcsDate(value, allDay = false) {
+  const date = new Date(value);
+  if (allDay) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}${m}${d}`;
+  }
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function buildIcs(events) {
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//DevLow//MailDesk//FR",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+  ];
+  for (const event of events) {
+    lines.push(
+      "BEGIN:VEVENT",
+      `UID:${encodeIcsText(event.sourceUid || event.id + "@maildesk")}`,
+      `DTSTAMP:${formatIcsDate(new Date().toISOString())}`,
+      event.allDay ? `DTSTART;VALUE=DATE:${formatIcsDate(event.startAt, true)}` : `DTSTART:${formatIcsDate(event.startAt)}`,
+      event.allDay ? `DTEND;VALUE=DATE:${formatIcsDate(event.endAt, true)}` : `DTEND:${formatIcsDate(event.endAt)}`,
+      `SUMMARY:${encodeIcsText(event.title)}`,
+      ...(event.description ? [`DESCRIPTION:${encodeIcsText(event.description)}`] : []),
+      ...(event.location ? [`LOCATION:${encodeIcsText(event.location)}`] : []),
+      ...(event.attendees || []).map((item) => `ATTENDEE:mailto:${encodeIcsText(item)}`),
+      "END:VEVENT",
+    );
+  }
+  lines.push("END:VCALENDAR", "");
+  return lines.join("\r\n");
+}
+
+async function importIcsCalendar() {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Importer un calendrier ICS",
+    properties: ["openFile"],
+    filters: [{ name: "Calendrier iCalendar", extensions: ["ics"] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return { ok: false, canceled: true, imported: 0 };
+  const raw = await fs.promises.readFile(result.filePaths[0], "utf8");
+  const events = parseIcsEvents(raw);
+  let imported = 0;
+  for (const event of events) {
+    const stableId = event.sourceUid
+      ? `ics-${Buffer.from(event.sourceUid).toString("base64url").slice(0, 80)}`
+      : undefined;
+    saveCalendarEvent({ ...event, id: stableId });
+    imported += 1;
+  }
+  return { ok: true, canceled: false, imported };
+}
+
+async function exportIcsCalendar() {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Exporter le calendrier",
+    defaultPath: path.join(app.getPath("documents"), "MailDesk-calendrier.ics"),
+    filters: [{ name: "Calendrier iCalendar", extensions: ["ics"] }],
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+  const content = buildIcs(listCalendarEvents());
+  await fs.promises.writeFile(result.filePath, content, "utf8");
+  return { ok: true, canceled: false, path: result.filePath };
+}
+
 function showFirstRunSetup() {
   return new Promise((resolve) => {
     setupResolver = resolve;
@@ -560,6 +750,116 @@ async function startProductionServer() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+
+function createSecondaryWindow(targetUrl, options = {}) {
+  const win = new BrowserWindow({
+    width: options.width || 980,
+    height: options.height || 780,
+    minWidth: options.minWidth || 720,
+    minHeight: options.minHeight || 520,
+    backgroundColor: "#f3f5f7",
+    title: options.title || "MailDesk",
+    icon: path.join(app.getAppPath(), "public", "maildesk.ico"),
+    show: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+  win.setMenuBarVisibility(false);
+  win.once("ready-to-show", () => win.show());
+  void win.loadURL(targetUrl);
+  win.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (/^(https?:\/\/|mailto:)/i.test(target)) void shell.openExternal(target);
+    return { action: "deny" };
+  });
+  secondaryWindows.add(win);
+  win.on("closed", () => secondaryWindows.delete(win));
+  return win;
+}
+
+function openMessageWindow(id) {
+  if (!applicationUrl || !id) return false;
+  createSecondaryWindow(
+    `${applicationUrl}/window/mail?id=${encodeURIComponent(String(id))}`,
+    { width: 980, height: 820, title: "MailDesk — Message" },
+  );
+  return true;
+}
+
+async function installPendingUpdate() {
+  if (!pendingUpdateInstaller || !fs.existsSync(pendingUpdateInstaller)) {
+    return { ok: false, message: "Aucune mise à jour téléchargée." };
+  }
+  const error = await shell.openPath(pendingUpdateInstaller);
+  if (error) return { ok: false, message: error };
+  isQuitting = true;
+  setTimeout(() => app.quit(), 500);
+  return { ok: true };
+}
+
+function showUpdateNotification(result) {
+  if (!Notification.isSupported() || !result?.available || !result?.installerPath) return;
+  pendingUpdateInstaller = result.installerPath;
+  const notification = new Notification({
+    title: `MailDesk ${result.latestVersion} est prêt`,
+    body: result.notes || "La mise à jour a été téléchargée et vérifiée.",
+    silent: false,
+    actions: [
+      { type: "button", text: "Installer" },
+      { type: "button", text: "Plus tard" },
+    ],
+    closeButtonText: "Fermer",
+  });
+  notification.on("click", () => {
+    showMainWindow();
+    sendMainAction("update-ready", {
+      text: `Version ${result.latestVersion}${result.notes ? ` — ${result.notes}` : ""}`,
+    });
+  });
+  notification.on("action", (_event, actionIndex) => {
+    if (actionIndex === 0) void installPendingUpdate();
+  });
+  notification.show();
+}
+
+async function runUpdateCheck({ manual = false } = {}) {
+  if (updateCheckInFlight) return await updateCheckInFlight;
+  const settings = effectiveSettings();
+  const manifestUrl = String(settings.updateManifestUrl || "").trim();
+  if (!manifestUrl) {
+    return { ok: false, available: false, message: "Aucune URL de mise à jour n’est configurée." };
+  }
+  if (!manual && !settings.autoUpdateEnabled) {
+    return { ok: true, available: false, skipped: true, message: "Recherche automatique désactivée." };
+  }
+
+  updateCheckInFlight = checkForUpdate({
+    currentVersion: app.getVersion(),
+    manifestUrl,
+    targetDir: path.join(app.getPath("userData"), "updates"),
+    download: true,
+  })
+    .then((result) => {
+      if (result.available && result.installerPath) showUpdateNotification(result);
+      return result;
+    })
+    .catch((error) => ({
+      ok: false,
+      available: false,
+      message: error instanceof Error ? error.message : String(error),
+    }))
+    .finally(() => {
+      updateCheckInFlight = null;
+    });
+
+  return await updateCheckInFlight;
+}
+
 function createWindow(url) {
   mainWindow = new BrowserWindow({
     width: 1480,
@@ -570,6 +870,7 @@ function createWindow(url) {
     title: "MailDesk",
     icon: path.join(app.getAppPath(), "public", "maildesk.ico"),
     show: false,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -579,6 +880,7 @@ function createWindow(url) {
     },
   });
 
+  mainWindow.setMenuBarVisibility(false);
   mainWindow.once("ready-to-show", () => mainWindow?.show());
   void mainWindow.loadURL(url);
 
@@ -638,7 +940,9 @@ ipcMain.handle("maildesk:save-settings", async (_event, input) => {
   applyStoredSettings();
 
   let sync = { configured: false, ok: true, mode: "local-only", message: "Base locale active" };
-  if (saved.supabaseUrl && saved.supabaseKey) {
+  const touchesSupabase = ["supabaseUrl", "supabaseKey", "supabaseProjectRef", "supabaseManagementToken"]
+    .some((key) => Object.prototype.hasOwnProperty.call(input || {}, key));
+  if (touchesSupabase && saved.supabaseUrl && saved.supabaseKey) {
     try {
       if (saved.supabaseManagementToken) {
         const initialized = await initializeSupabase(saved);
@@ -726,6 +1030,20 @@ ipcMain.handle("maildesk:rules-list", () => listRules());
 ipcMain.handle("maildesk:rule-save", (_event, rule) => saveRule(rule));
 ipcMain.handle("maildesk:rule-delete", (_event, id) => deleteRule(id));
 ipcMain.handle("maildesk:rules-run", () => runRulesOnInbox());
+
+ipcMain.handle("maildesk:templates-list", () => listTemplates());
+ipcMain.handle("maildesk:template-save", (_event, template) => saveTemplate(template));
+ipcMain.handle("maildesk:template-delete", (_event, id) => deleteTemplate(id));
+
+ipcMain.handle("maildesk:calendar-list", (_event, range) => listCalendarEvents(range?.from, range?.to));
+ipcMain.handle("maildesk:calendar-save", (_event, event) => saveCalendarEvent(event));
+ipcMain.handle("maildesk:calendar-delete", (_event, id) => deleteCalendarEvent(id));
+ipcMain.handle("maildesk:calendar-import-ics", () => importIcsCalendar());
+ipcMain.handle("maildesk:calendar-export-ics", () => exportIcsCalendar());
+
+ipcMain.handle("maildesk:window-open-message", (_event, id) => openMessageWindow(id));
+ipcMain.handle("maildesk:update-check", () => runUpdateCheck({ manual: true }));
+ipcMain.handle("maildesk:update-install", () => installPendingUpdate());
 
 ipcMain.handle("maildesk:db-snapshot", () => getSnapshot());
 ipcMain.handle("maildesk:db-search", (_event, query, limit) => searchLocalMessages(query, limit));
@@ -857,6 +1175,8 @@ app.whenReady().then(async () => {
 
   setTimeout(() => void processOutbox(), 2000);
   outboxTimer = setInterval(() => void processOutbox(), 60_000);
+  setTimeout(() => void runUpdateCheck({ manual: false }), 8000);
+  updateTimer = setInterval(() => void runUpdateCheck({ manual: false }), 6 * 60 * 60 * 1000);
 
   app.on("activate", () => {
     showMainWindow();
@@ -875,6 +1195,12 @@ app.on("before-quit", () => {
   outboxTimer = null;
   if (outboxWakeTimer) clearTimeout(outboxWakeTimer);
   outboxWakeTimer = null;
+  if (updateTimer) clearInterval(updateTimer);
+  updateTimer = null;
+  for (const win of secondaryWindows) {
+    if (!win.isDestroyed()) win.destroy();
+  }
+  secondaryWindows.clear();
   closeDatabase();
   if (nextServer) nextServer.close();
   if (nextApplication?.close) void nextApplication.close();

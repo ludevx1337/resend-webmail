@@ -93,10 +93,39 @@ type OutboxItem = {
 type ContactItem = {
   email: string;
   name: string;
+  company: string;
+  phone: string;
+  notes: string;
+  tags: string[];
   timesSeen: number;
   lastSeenAt?: string;
   isFavorite: boolean;
   source: "learned" | "manual";
+  updatedAt: string;
+};
+
+type MailTemplate = {
+  id: string;
+  name: string;
+  subject: string;
+  html: string;
+  text: string;
+  shortcut: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CalendarEventItem = {
+  id: string;
+  title: string;
+  description: string;
+  location: string;
+  startAt: string;
+  endAt: string;
+  allDay: boolean;
+  attendees: string[];
+  sourceUid: string;
+  createdAt: string;
   updatedAt: string;
 };
 
@@ -142,6 +171,8 @@ type SyncResult = {
   contacts?: number;
   folders?: number;
   rules?: number;
+  templates?: number;
+  calendarEvents?: number;
 };
 
 declare global {
@@ -159,7 +190,7 @@ declare global {
       printDocument: (payload: { title: string; html: string }) => Promise<{ ok: boolean; canceled?: boolean; message?: string }>;
       exportPdf: (payload: { title: string; html: string }) => Promise<{ ok: boolean; canceled?: boolean; path?: string }>;
       exportEml: (payload: { title: string; folder: "inbox" | "sent"; message: LocalMail }) => Promise<{ ok: boolean; canceled?: boolean; path?: string }>;
-      notifyNewMail: (payload: { count: number; title?: string; body?: string }) => Promise<boolean>;
+      notifyNewMail: (payload: { id?: string; count: number; title?: string; body?: string }) => Promise<boolean>;
       getSettings: () => Promise<{
         from: string;
         signature: string;
@@ -170,11 +201,13 @@ declare global {
         hasApiKey: boolean;
         hasSupabaseKey: boolean;
         hasSupabaseManagementToken: boolean;
+        autoUpdateEnabled: boolean;
+        updateManifestUrl: string;
         databasePath: string;
         isPackaged: boolean;
       }>;
       saveSettings: (settings: {
-        from: string;
+        from?: string;
         apiKey?: string;
         signature?: string;
         identities?: MailIdentity[];
@@ -183,6 +216,8 @@ declare global {
         supabaseKey?: string;
         supabaseProjectRef?: string;
         supabaseManagementToken?: string;
+        autoUpdateEnabled?: boolean;
+        updateManifestUrl?: string;
       }) => Promise<{
         from: string;
         signature: string;
@@ -193,6 +228,8 @@ declare global {
         hasApiKey: boolean;
         hasSupabaseKey: boolean;
         hasSupabaseManagementToken: boolean;
+        autoUpdateEnabled: boolean;
+        updateManifestUrl: string;
         sync?: SyncResult;
         requiresDevRestart?: boolean;
       }>;
@@ -247,7 +284,15 @@ declare global {
       processOutbox: () => Promise<OutboxItem[]>;
       listContacts: (limit?: number) => Promise<ContactItem[]>;
       searchContacts: (query: string, limit?: number) => Promise<ContactItem[]>;
-      saveContact: (contact: { email: string; name?: string; isFavorite?: boolean }) => Promise<ContactItem>;
+      saveContact: (contact: {
+        email: string;
+        name?: string;
+        company?: string;
+        phone?: string;
+        notes?: string;
+        tags?: string[];
+        isFavorite?: boolean;
+      }) => Promise<ContactItem>;
       deleteContact: (email: string) => Promise<boolean>;
       listBlockedSenders: () => Promise<Array<{ email: string; createdAt: string }>>;
       blockSender: (from: string) => Promise<{ email: string; createdAt: string }>;
@@ -268,6 +313,43 @@ declare global {
       }) => Promise<MailRule>;
       deleteRule: (id: string) => Promise<boolean>;
       runRules: () => Promise<{ matched: number; snapshot: LocalSnapshot }>;
+      listTemplates: () => Promise<MailTemplate[]>;
+      saveTemplate: (template: {
+        id?: string;
+        name: string;
+        subject?: string;
+        html?: string;
+        text?: string;
+        shortcut?: string;
+      }) => Promise<MailTemplate>;
+      deleteTemplate: (id: string) => Promise<boolean>;
+      listCalendarEvents: (range?: { from?: string; to?: string }) => Promise<CalendarEventItem[]>;
+      saveCalendarEvent: (event: {
+        id?: string;
+        title: string;
+        description?: string;
+        location?: string;
+        startAt: string;
+        endAt: string;
+        allDay?: boolean;
+        attendees?: string[];
+        sourceUid?: string;
+      }) => Promise<CalendarEventItem>;
+      deleteCalendarEvent: (id: string) => Promise<boolean>;
+      importCalendarIcs: () => Promise<{ ok: boolean; canceled?: boolean; imported?: number }>;
+      exportCalendarIcs: () => Promise<{ ok: boolean; canceled?: boolean; path?: string }>;
+      openMessageWindow: (id: string) => Promise<boolean>;
+      checkForUpdates: () => Promise<{
+        ok: boolean;
+        available: boolean;
+        downloaded?: boolean;
+        currentVersion?: string;
+        latestVersion?: string;
+        notes?: string;
+        installerPath?: string;
+        message: string;
+      }>;
+      installPendingUpdate: () => Promise<{ ok: boolean; message?: string }>;
       exportBackup: () => Promise<{ ok: boolean; canceled?: boolean; path?: string }>;
       restoreBackup: () => Promise<{
         ok: boolean;

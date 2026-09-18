@@ -1,13 +1,17 @@
 const {
+  exportCalendarEvents,
   exportContacts,
   exportCustomFolders,
   exportRows,
   exportRules,
+  exportTemplates,
   markSynced,
+  mergeRemoteCalendarEvents,
   mergeRemoteContacts,
   mergeRemoteCustomFolders,
   mergeRemoteRows,
   mergeRemoteRules,
+  mergeRemoteTemplates,
 } = require("./db.cjs");
 
 const TABLES = {
@@ -15,6 +19,8 @@ const TABLES = {
   contacts: "maildesk_contacts",
   folders: "maildesk_folders",
   rules: "maildesk_rules",
+  templates: "maildesk_templates",
+  calendar: "maildesk_calendar_events",
 };
 
 function headers(key, extra = {}) {
@@ -84,29 +90,38 @@ async function syncWithSupabase(settings) {
   const remoteMessages = await pullTable(url, key, TABLES.messages);
   mergeRemoteRows(remoteMessages.rows);
 
-  const [remoteContacts, remoteFolders, remoteRules] = await Promise.all([
+  const [remoteContacts, remoteFolders, remoteRules, remoteTemplates, remoteCalendar] = await Promise.all([
     pullTable(url, key, TABLES.contacts, true),
     pullTable(url, key, TABLES.folders, true),
     pullTable(url, key, TABLES.rules, true),
+    pullTable(url, key, TABLES.templates, true),
+    pullTable(url, key, TABLES.calendar, true),
   ]);
 
   if (remoteContacts.available) mergeRemoteContacts(remoteContacts.rows);
   if (remoteFolders.available) mergeRemoteCustomFolders(remoteFolders.rows);
   if (remoteRules.available) mergeRemoteRules(remoteRules.rows);
+  if (remoteTemplates.available) mergeRemoteTemplates(remoteTemplates.rows);
+  if (remoteCalendar.available) mergeRemoteCalendarEvents(remoteCalendar.rows);
 
   const localMessages = exportRows();
   const localContacts = exportContacts();
   const localFolders = exportCustomFolders();
   const localRules = exportRules();
+  const localTemplates = exportTemplates();
+  const localCalendar = exportCalendarEvents();
 
   await pushTable(url, key, TABLES.messages, localMessages);
   if (remoteContacts.available) await pushTable(url, key, TABLES.contacts, localContacts);
   if (remoteFolders.available) await pushTable(url, key, TABLES.folders, localFolders);
   if (remoteRules.available) await pushTable(url, key, TABLES.rules, localRules);
+  if (remoteTemplates.available) await pushTable(url, key, TABLES.templates, localTemplates);
+  if (remoteCalendar.available) await pushTable(url, key, TABLES.calendar, localCalendar);
 
   markSynced();
 
-  const extrasReady = remoteContacts.available && remoteFolders.available && remoteRules.available;
+  const extrasReady = remoteContacts.available && remoteFolders.available && remoteRules.available
+    && remoteTemplates.available && remoteCalendar.available;
   return {
     configured: true,
     ok: true,
@@ -115,9 +130,11 @@ async function syncWithSupabase(settings) {
     contacts: localContacts.length,
     folders: localFolders.length,
     rules: localRules.length,
+    templates: localTemplates.length,
+    calendarEvents: localCalendar.length,
     message: extrasReady
-      ? "Base locale, contacts, dossiers et règles synchronisés avec Supabase"
-      : "Mails synchronisés avec Supabase. Utilisez « Créer / réparer les tables » pour activer la synchro Contacts/Dossiers/Règles.",
+      ? "Base locale, contacts, dossiers, règles, modèles et calendrier synchronisés avec Supabase"
+      : "Mails synchronisés avec Supabase. Utilisez « Créer / réparer les tables » pour activer la synchro complète.",
   };
 }
 

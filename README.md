@@ -34,13 +34,18 @@ MailDesk est un client e-mail Windows construit avec **Electron + Next.js + Type
 - recherche plein texte locale SQLite FTS5 dans sujet, expéditeur, destinataires, corps et pièces jointes, disponible hors ligne ;
 - recherche avancée combinable : `from:`, `to:`, `subject:`, `has:attachment`, `before:`, `after:`, `is:`, `category:`, `folder:` ;
 - dossiers personnalisés SQLite/Supabase avec compteurs, renommage, suppression sûre, drag & drop et déplacement depuis le menu contextuel ;
-- carnet de contacts SQLite appris automatiquement depuis les correspondants, avec contacts manuels, favoris et masquage persistant ;
+- carnet de contacts SQLite appris automatiquement depuis les correspondants, enrichi avec société, téléphone, tags, notes, favoris et édition complète ;
 - auto-complétion À/Cc/Cci classée par favoris, fréquence et récence, avec navigation clavier ;
+- modèles et réponses rapides persistés dans SQLite/Supabase et insérables directement depuis le composeur ;
+- calendrier local avec création/édition d'événements, participants, lieu, import ICS et export ICS ;
 - règles automatiques locales sur expéditeur, objet ou destinataire vers Archives, Favoris, Lu, Corbeille ou un dossier personnalisé ;
 - filtres et tri ;
 - menu contextuel Windows au clic droit ;
-- menus Fichier / Message / Affichage / Édition et raccourcis de type Outlook ;
+- barre de menu Electron masquée ; l'interface conserve les raccourcis utiles sans menu natif visible ;
+- multi-fenêtres : double-clic ou bouton **Fenêtre** pour détacher plusieurs messages simultanément ;
+- notifications Windows avec actions **Ouvrir** et **Marquer lu** ;
 - intégration Windows : démarrage à l'ouverture de session, gestionnaire `mailto:`, instance unique et compteur non lu dans l'infobulle du tray ;
+- auto-update facultatif par manifest HTTPS, téléchargement du Setup et validation SHA-256 avant installation ;
 - sauvegarde/restauration SQLite complète depuis Paramètres ou le menu Fichier, avec copie de sécurité automatique avant restauration ;
 - accès direct au dossier de données local et affichage de la version installée ;
 - serveur Next.js embarqué dans la version packagée.
@@ -54,7 +59,7 @@ Si aucun compte n'a encore été configuré, Electron affiche une fenêtre dédi
 
 Ces valeurs sont enregistrées dans le profil Windows de MailDesk sous forme d'un blob chiffré avec `safeStorage`. Le fichier de configuration ne contient donc pas la clé API en clair. Une fois la configuration enregistrée, les prochains lancements ouvrent directement la boîte mail.
 
-La configuration peut ensuite être modifiée depuis **Fichier > Paramètres** ou l'icône engrenage.
+La configuration peut ensuite être modifiée depuis l'icône **engrenage**. Les paramètres utilisent une navigation latérale par onglets ; chaque onglet affiche une disquette qui devient bleue uniquement lorsqu'il contient des modifications non enregistrées.
 
 ## Base locale SQLite
 
@@ -94,9 +99,33 @@ La liste de courrier affiche une seule ligne par conversation avec un compteur. 
 
 La table SQLite `contacts` est alimentée automatiquement à partir des expéditeurs reçus et des destinataires utilisés dans les mails envoyés. MailDesk reconstruit le score de fréquence depuis l'historique au démarrage pour éviter qu'un simple refresh augmente artificiellement le classement.
 
-Le carnet **Contacts** permet aussi d'ajouter un contact manuellement, de le mettre en favori, de lancer directement une rédaction et de le masquer du carnet. Un contact appris puis supprimé reste masqué même si son adresse existe toujours dans l'historique local.
+Le carnet **Contacts** permet aussi d'ajouter ou modifier un contact manuellement, de renseigner sa société, son téléphone, des tags et des notes internes, de le mettre en favori et de lancer directement une rédaction. Un contact appris puis supprimé reste masqué même si son adresse existe toujours dans l'historique local.
 
 Dans les champs **À / Cc / Cci**, MailDesk propose les contacts selon les favoris, la fréquence d'échange et la récence. Les suggestions supportent les flèches haut/bas, Entrée et Échap.
+
+### Modèles et réponses rapides
+
+L'onglet **Paramètres > Modèles** permet de créer des réponses réutilisables avec :
+
+- nom ;
+- raccourci lisible, par exemple `/devis` ;
+- objet proposé ;
+- version texte ;
+- version HTML.
+
+Les modèles sont stockés localement dans SQLite, synchronisés avec Supabase lorsqu'il est configuré et proposés directement dans le composeur via **Réponse rapide**.
+
+### Calendrier et ICS
+
+Le bouton **Calendrier** de la barre latérale ouvre l'agenda local MailDesk. Chaque événement peut contenir un titre, un début, une fin, un lieu, une description et des participants.
+
+MailDesk sait importer un fichier `.ics` contenant des événements `VEVENT` et exporter l'agenda local dans un fichier iCalendar compatible avec Outlook, Google Calendar, Apple Calendar et les autres logiciels prenant en charge ICS.
+
+### Multi-fenêtres
+
+Un double-clic sur un message ou le bouton **Fenêtre** du volet de lecture ouvre une fenêtre Electron indépendante. Plusieurs messages peuvent donc rester ouverts simultanément pendant que la fenêtre principale continue d'être utilisée.
+
+La fenêtre détachée conserve la lecture HTML sécurisée, les pièces jointes et les commandes Imprimer / PDF / EML.
 
 ### Règles automatiques
 
@@ -249,6 +278,23 @@ La fenêtre de rédaction utilise **Tiptap 3 / ProseMirror** avec rendu différ�
 - signature automatique ;
 - envoi HTML + alternative texte.
 
+## Mises à jour automatiques
+
+L'onglet **Paramètres > Mises à jour** peut utiliser un manifest JSON hébergé en HTTPS. Le client compare la version, télécharge le Setup dans le profil local, vérifie son SHA-256 puis affiche une notification Windows avec **Installer** / **Plus tard**.
+
+Format du manifest :
+
+```json
+{
+  "version": "0.4.1",
+  "url": "https://votre-domaine.fr/MailDesk-Setup-0.4.1-x64.exe",
+  "sha256": "SHA256_HEXADECIMAL_64_CARACTERES",
+  "notes": "Corrections et améliorations"
+}
+```
+
+L'URL du Setup doit elle aussi utiliser HTTPS. Le fichier téléchargé n'est proposé à l'installation que si son SHA-256 correspond exactement au manifest.
+
 ## Actions du clic droit
 
 Sur un message : Répondre, Répondre à tous, Transférer, Marquer lu/non lu, Favori, Archiver, Supprimer, Restaurer et Supprimer définitivement.
@@ -306,7 +352,7 @@ Sorties :
 
 ```text
 dist-electron\win-unpacked\MailDesk.exe
-release-0.3.1\MailDesk-Setup-0.3.1-x64.exe
+release-0.4.0\MailDesk-Setup-0.4.0-x64.exe
 ```
 
 ## Architecture
@@ -321,10 +367,12 @@ electron/
   db.cjs             Base locale SQLite
   sync.cjs           Synchronisation Supabase facultative
   supabase-provision.cjs  Bootstrap automatique via Management API
-  menu.cjs           Menus Windows et menu contextuel
+  updater.cjs        Vérification HTTPS, téléchargement et contrôle SHA-256 des mises à jour
+  menu.cjs           Raccourcis/menu contextuel Windows
 
 src/app/
   page.tsx           Interface MailDesk
+  window/mail/       Fenêtre de lecture détachée
   api/mail/          API locale Resend
 
 src/components/mail/

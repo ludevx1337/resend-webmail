@@ -86,6 +86,10 @@ function getDb() {
     CREATE TABLE IF NOT EXISTS contacts (
       email TEXT PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
+      company TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      tags_json TEXT NOT NULL DEFAULT '[]',
       times_seen INTEGER NOT NULL DEFAULT 0,
       last_seen_at TEXT,
       is_favorite INTEGER NOT NULL DEFAULT 0,
@@ -123,6 +127,35 @@ function getDb() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS mail_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      subject TEXT NOT NULL DEFAULT '',
+      html TEXT NOT NULL DEFAULT '',
+      text_body TEXT NOT NULL DEFAULT '',
+      shortcut TEXT NOT NULL DEFAULT '',
+      is_deleted INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mail_templates_name ON mail_templates(is_deleted, name);
+
+    CREATE TABLE IF NOT EXISTS calendar_events (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      location TEXT NOT NULL DEFAULT '',
+      start_at TEXT NOT NULL,
+      end_at TEXT NOT NULL,
+      all_day INTEGER NOT NULL DEFAULT 0,
+      attendees_json TEXT NOT NULL DEFAULT '[]',
+      source_uid TEXT,
+      is_deleted INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(is_deleted, start_at);
+
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
       id UNINDEXED,
       subject,
@@ -140,6 +173,10 @@ function getDb() {
   ensureTableColumn(database, "messages", "snoozed_until", "TEXT");
   ensureTableColumn(database, "drafts", "from_addr", "TEXT NOT NULL DEFAULT ''");
   ensureTableColumn(database, "drafts", "reply_references_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(database, "contacts", "company", "TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(database, "contacts", "phone", "TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(database, "contacts", "notes", "TEXT NOT NULL DEFAULT ''");
+  ensureTableColumn(database, "contacts", "tags_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureTableColumn(database, "contacts", "is_hidden", "INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(database, "custom_folders", "is_deleted", "INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(database, "mail_rules", "action_value", "TEXT");
@@ -355,6 +392,10 @@ function rowToContact(row) {
   return {
     email: row.email,
     name: row.name || "",
+    company: row.company || "",
+    phone: row.phone || "",
+    notes: row.notes || "",
+    tags: parse(row.tags_json),
     timesSeen: Number(row.times_seen || 0),
     lastSeenAt: row.last_seen_at || undefined,
     isFavorite: Boolean(row.is_favorite),
@@ -379,10 +420,17 @@ function searchContacts(query, limit = 8) {
   return getDb().prepare(`
     SELECT * FROM contacts
     WHERE is_hidden = 0
-      AND (lower(email) LIKE ? OR lower(name) LIKE ?)
+      AND (
+        lower(email) LIKE ?
+        OR lower(name) LIKE ?
+        OR lower(company) LIKE ?
+        OR lower(phone) LIKE ?
+        OR lower(notes) LIKE ?
+        OR lower(tags_json) LIKE ?
+      )
     ORDER BY is_favorite DESC, times_seen DESC, datetime(last_seen_at) DESC, email ASC
     LIMIT ?
-  `).all(like, like, Math.max(1, Math.min(50, Number(limit) || 8))).map(rowToContact);
+  `).all(like, like, like, like, like, like, Math.max(1, Math.min(50, Number(limit) || 8))).map(rowToContact);
 }
 
 function saveContact(contact = {}) {
@@ -391,10 +439,17 @@ function saveContact(contact = {}) {
   const db = getDb();
   const now = new Date().toISOString();
   db.prepare(`
-    INSERT INTO contacts (email, name, times_seen, last_seen_at, is_favorite, is_hidden, source, updated_at)
-    VALUES (?, ?, 0, ?, ?, 0, 'manual', ?)
+    INSERT INTO contacts (
+      email, name, company, phone, notes, tags_json,
+      times_seen, last_seen_at, is_favorite, is_hidden, source, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 0, 'manual', ?)
     ON CONFLICT(email) DO UPDATE SET
       name = excluded.name,
+      company = excluded.company,
+      phone = excluded.phone,
+      notes = excluded.notes,
+      tags_json = excluded.tags_json,
       is_favorite = excluded.is_favorite,
       is_hidden = 0,
       source = 'manual',
@@ -402,6 +457,10 @@ function saveContact(contact = {}) {
   `).run(
     parsed.email,
     String(contact.name || "").trim(),
+    String(contact.company || "").trim(),
+    String(contact.phone || "").trim(),
+    String(contact.notes || "").trim(),
+    json(Array.isArray(contact.tags) ? contact.tags.map((item) => String(item).trim()).filter(Boolean) : []),
     now,
     Number(Boolean(contact.isFavorite)),
     now,
@@ -1067,6 +1126,10 @@ function exportContacts() {
   return getDb().prepare("SELECT * FROM contacts").all().map((row) => ({
     email: row.email,
     name: row.name || "",
+    company: row.company || "",
+    phone: row.phone || "",
+    notes: row.notes || "",
+    tags_json: parse(row.tags_json),
     times_seen: Number(row.times_seen || 0),
     last_seen_at: row.last_seen_at || null,
     is_favorite: Boolean(row.is_favorite),
@@ -1080,10 +1143,17 @@ function mergeRemoteContacts(rows) {
   const db = getDb();
   const select = db.prepare("SELECT updated_at FROM contacts WHERE email = ?");
   const upsert = db.prepare(`
-    INSERT INTO contacts (email, name, times_seen, last_seen_at, is_favorite, is_hidden, source, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO contacts (
+      email, name, company, phone, notes, tags_json,
+      times_seen, last_seen_at, is_favorite, is_hidden, source, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(email) DO UPDATE SET
       name = excluded.name,
+      company = excluded.company,
+      phone = excluded.phone,
+      notes = excluded.notes,
+      tags_json = excluded.tags_json,
       times_seen = excluded.times_seen,
       last_seen_at = excluded.last_seen_at,
       is_favorite = excluded.is_favorite,
@@ -1101,6 +1171,10 @@ function mergeRemoteContacts(rows) {
       upsert.run(
         String(row.email).toLowerCase(),
         String(row.name || ""),
+        String(row.company || ""),
+        String(row.phone || ""),
+        String(row.notes || ""),
+        json(row.tags_json),
         Number(row.times_seen || 0),
         row.last_seen_at || null,
         Number(Boolean(row.is_favorite)),
@@ -1115,6 +1189,273 @@ function mergeRemoteContacts(rows) {
     throw error;
   }
   return listContacts();
+}
+
+
+function rowToTemplate(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    subject: row.subject || "",
+    html: row.html || "",
+    text: row.text_body || "",
+    shortcut: row.shortcut || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function listTemplates() {
+  return getDb().prepare("SELECT * FROM mail_templates WHERE is_deleted = 0 ORDER BY lower(name) ASC").all().map(rowToTemplate);
+}
+
+function saveTemplate(template = {}) {
+  const db = getDb();
+  const name = String(template.name || "").trim();
+  if (!name) throw new Error("Le nom du modèle est requis.");
+  const id = String(template.id || randomUUID());
+  const now = new Date().toISOString();
+  const existing = db.prepare("SELECT created_at FROM mail_templates WHERE id = ?").get(id);
+  db.prepare(`
+    INSERT INTO mail_templates (
+      id, name, subject, html, text_body, shortcut, is_deleted, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      subject = excluded.subject,
+      html = excluded.html,
+      text_body = excluded.text_body,
+      shortcut = excluded.shortcut,
+      is_deleted = 0,
+      updated_at = excluded.updated_at
+  `).run(
+    id,
+    name,
+    String(template.subject || ""),
+    String(template.html || ""),
+    String(template.text || ""),
+    String(template.shortcut || "").trim(),
+    existing?.created_at || now,
+    now,
+  );
+  return rowToTemplate(db.prepare("SELECT * FROM mail_templates WHERE id = ?").get(id));
+}
+
+function deleteTemplate(id) {
+  getDb().prepare("UPDATE mail_templates SET is_deleted = 1, updated_at = ? WHERE id = ?")
+    .run(new Date().toISOString(), String(id));
+  return true;
+}
+
+function exportTemplates() {
+  return getDb().prepare("SELECT * FROM mail_templates").all().map((row) => ({
+    id: row.id,
+    name: row.name,
+    subject: row.subject || "",
+    html: row.html || "",
+    text_body: row.text_body || "",
+    shortcut: row.shortcut || "",
+    is_deleted: Boolean(row.is_deleted),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }));
+}
+
+function mergeRemoteTemplates(rows) {
+  const db = getDb();
+  const select = db.prepare("SELECT updated_at FROM mail_templates WHERE id = ?");
+  const upsert = db.prepare(`
+    INSERT INTO mail_templates (
+      id, name, subject, html, text_body, shortcut, is_deleted, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      subject = excluded.subject,
+      html = excluded.html,
+      text_body = excluded.text_body,
+      shortcut = excluded.shortcut,
+      is_deleted = excluded.is_deleted,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at
+  `);
+  db.exec("BEGIN");
+  try {
+    for (const row of rows || []) {
+      if (!row?.id || !row?.updated_at) continue;
+      const local = select.get(String(row.id));
+      if (local?.updated_at && new Date(local.updated_at).getTime() >= new Date(row.updated_at).getTime()) continue;
+      upsert.run(
+        String(row.id),
+        String(row.name || "Modèle"),
+        String(row.subject || ""),
+        String(row.html || ""),
+        String(row.text_body || ""),
+        String(row.shortcut || ""),
+        Number(Boolean(row.is_deleted)),
+        row.created_at || row.updated_at,
+        row.updated_at,
+      );
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return listTemplates();
+}
+
+function rowToCalendarEvent(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description || "",
+    location: row.location || "",
+    startAt: row.start_at,
+    endAt: row.end_at,
+    allDay: Boolean(row.all_day),
+    attendees: parse(row.attendees_json),
+    sourceUid: row.source_uid || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function listCalendarEvents(from, to) {
+  const db = getDb();
+  const clauses = ["is_deleted = 0"];
+  const params = [];
+  if (from) {
+    clauses.push("end_at >= ?");
+    params.push(String(from));
+  }
+  if (to) {
+    clauses.push("start_at <= ?");
+    params.push(String(to));
+  }
+  return db.prepare(`
+    SELECT * FROM calendar_events
+    WHERE ${clauses.join(" AND ")}
+    ORDER BY datetime(start_at) ASC, title ASC
+  `).all(...params).map(rowToCalendarEvent);
+}
+
+function saveCalendarEvent(event = {}) {
+  const db = getDb();
+  const title = String(event.title || "").trim();
+  if (!title) throw new Error("Le titre de l’événement est requis.");
+  const start = new Date(event.startAt || "");
+  const end = new Date(event.endAt || "");
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end.getTime() < start.getTime()) {
+    throw new Error("Les dates de l’événement sont invalides.");
+  }
+  const id = String(event.id || randomUUID());
+  const now = new Date().toISOString();
+  const existing = db.prepare("SELECT created_at FROM calendar_events WHERE id = ?").get(id);
+  db.prepare(`
+    INSERT INTO calendar_events (
+      id, title, description, location, start_at, end_at, all_day, attendees_json,
+      source_uid, is_deleted, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      description = excluded.description,
+      location = excluded.location,
+      start_at = excluded.start_at,
+      end_at = excluded.end_at,
+      all_day = excluded.all_day,
+      attendees_json = excluded.attendees_json,
+      source_uid = excluded.source_uid,
+      is_deleted = 0,
+      updated_at = excluded.updated_at
+  `).run(
+    id,
+    title,
+    String(event.description || ""),
+    String(event.location || ""),
+    start.toISOString(),
+    end.toISOString(),
+    Number(Boolean(event.allDay)),
+    json(Array.isArray(event.attendees) ? event.attendees.map((item) => String(item).trim()).filter(Boolean) : []),
+    String(event.sourceUid || "").trim() || null,
+    existing?.created_at || now,
+    now,
+  );
+  return rowToCalendarEvent(db.prepare("SELECT * FROM calendar_events WHERE id = ?").get(id));
+}
+
+function deleteCalendarEvent(id) {
+  getDb().prepare("UPDATE calendar_events SET is_deleted = 1, updated_at = ? WHERE id = ?")
+    .run(new Date().toISOString(), String(id));
+  return true;
+}
+
+function exportCalendarEvents() {
+  return getDb().prepare("SELECT * FROM calendar_events").all().map((row) => ({
+    id: row.id,
+    title: row.title,
+    description: row.description || "",
+    location: row.location || "",
+    start_at: row.start_at,
+    end_at: row.end_at,
+    all_day: Boolean(row.all_day),
+    attendees_json: parse(row.attendees_json),
+    source_uid: row.source_uid || null,
+    is_deleted: Boolean(row.is_deleted),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }));
+}
+
+function mergeRemoteCalendarEvents(rows) {
+  const db = getDb();
+  const select = db.prepare("SELECT updated_at FROM calendar_events WHERE id = ?");
+  const upsert = db.prepare(`
+    INSERT INTO calendar_events (
+      id, title, description, location, start_at, end_at, all_day, attendees_json,
+      source_uid, is_deleted, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      description = excluded.description,
+      location = excluded.location,
+      start_at = excluded.start_at,
+      end_at = excluded.end_at,
+      all_day = excluded.all_day,
+      attendees_json = excluded.attendees_json,
+      source_uid = excluded.source_uid,
+      is_deleted = excluded.is_deleted,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at
+  `);
+  db.exec("BEGIN");
+  try {
+    for (const row of rows || []) {
+      if (!row?.id || !row?.updated_at || !row?.start_at || !row?.end_at) continue;
+      const local = select.get(String(row.id));
+      if (local?.updated_at && new Date(local.updated_at).getTime() >= new Date(row.updated_at).getTime()) continue;
+      upsert.run(
+        String(row.id),
+        String(row.title || "Événement"),
+        String(row.description || ""),
+        String(row.location || ""),
+        row.start_at,
+        row.end_at,
+        Number(Boolean(row.all_day)),
+        json(row.attendees_json),
+        row.source_uid || null,
+        Number(Boolean(row.is_deleted)),
+        row.created_at || row.updated_at,
+        row.updated_at,
+      );
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return listCalendarEvents();
 }
 
 function exportRules() {
@@ -1480,16 +1821,20 @@ module.exports = {
   createDatabaseBackup,
   databasePath,
   deleteActiveDraft,
+  deleteCalendarEvent,
   deleteContact,
   deleteCustomFolder,
   deleteDraft,
+  deleteTemplate,
   deleteOutbox,
   deleteRule,
   enqueueOutbox,
+  exportCalendarEvents,
   exportContacts,
   exportCustomFolders,
   exportRows,
   exportRules,
+  exportTemplates,
   getActiveDraft,
   getDraft,
   getDueOutbox,
@@ -1497,27 +1842,33 @@ module.exports = {
   getNextOutboxAttemptAt,
   getSnapshot,
   listBlockedSenders,
+  listCalendarEvents,
   listContacts,
   listCustomFolders,
   listDrafts,
   listOutbox,
   listRules,
+  listTemplates,
   markOutboxFailed,
   markOutboxSending,
   markSynced,
+  mergeRemoteCalendarEvents,
   mergeRemoteContacts,
   mergeRemoteCustomFolders,
   mergeRemoteRows,
   mergeRemoteRules,
+  mergeRemoteTemplates,
   resetSendingOutbox,
   restoreDatabaseBackup,
   retryOutbox,
   runRulesOnInbox,
   saveActiveDraft,
+  saveCalendarEvent,
   saveContact,
   saveCustomFolder,
   saveDraft,
   saveRule,
+  saveTemplate,
   searchContacts,
   searchLocalMessages,
   unblockSender,

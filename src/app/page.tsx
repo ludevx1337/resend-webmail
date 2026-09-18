@@ -2,12 +2,16 @@
 
 import {
   Archive,
+  Bell,
+  CalendarDays,
   ChevronDown,
   Clock3,
   ContactRound,
+  Database,
   Download,
   Edit3,
   FileDown,
+  ExternalLink,
   FileText,
   Folder as FolderIcon,
   FolderPlus,
@@ -24,6 +28,7 @@ import {
   Reply,
   ReplyAll,
   RotateCcw,
+  Save,
   Search,
   Send,
   Settings,
@@ -31,8 +36,11 @@ import {
   Star,
   Tag,
   Trash2,
+  UserRound,
+  Zap,
   X,
 } from "lucide-react";
+import Image from "next/image";
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { RichTextEditor } from "@/components/mail/rich-text-editor";
 import { RecipientInput } from "@/components/mail/recipient-input";
@@ -120,6 +128,10 @@ type UndoSendState = {
 type ContactEntry = {
   email: string;
   name: string;
+  company: string;
+  phone: string;
+  notes: string;
+  tags: string[];
   timesSeen: number;
   lastSeenAt?: string;
   isFavorite: boolean;
@@ -133,6 +145,43 @@ type MailIdentity = {
   from: string;
   signature: string;
   isDefault: boolean;
+};
+
+type MailTemplateEntry = {
+  id: string;
+  name: string;
+  subject: string;
+  html: string;
+  text: string;
+  shortcut: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CalendarEventEntry = {
+  id: string;
+  title: string;
+  description: string;
+  location: string;
+  startAt: string;
+  endAt: string;
+  allDay: boolean;
+  attendees: string[];
+  sourceUid: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SettingsTab = "account" | "sending" | "rules" | "templates" | "windows" | "data" | "supabase" | "updates";
+
+type SettingsBaseline = {
+  account: string;
+  sending: string;
+  rules: string;
+  templates: string;
+  windows: string;
+  supabase: string;
+  updates: string;
 };
 
 type CustomFolderEntry = {
@@ -473,6 +522,38 @@ export default function Home() {
   const [contactSearch, setContactSearch] = useState("");
   const [contactName, setContactName] = useState("");
   const [contactEmail, setContactEmail] = useState("");
+  const [contactCompany, setContactCompany] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [contactNotes, setContactNotes] = useState("");
+  const [contactTags, setContactTags] = useState("");
+  const [editingContactEmail, setEditingContactEmail] = useState("");
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEventEntry[]>([]);
+  const [calendarTitle, setCalendarTitle] = useState("");
+  const [calendarDescription, setCalendarDescription] = useState("");
+  const [calendarLocation, setCalendarLocation] = useState("");
+  const [calendarStart, setCalendarStart] = useState("");
+  const [calendarEnd, setCalendarEnd] = useState("");
+  const [calendarAttendees, setCalendarAttendees] = useState("");
+  const [calendarAllDay, setCalendarAllDay] = useState(false);
+  const [editingCalendarId, setEditingCalendarId] = useState("");
+  const [templates, setTemplates] = useState<MailTemplateEntry[]>([]);
+  const [templateId, setTemplateId] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [templateSubject, setTemplateSubject] = useState("");
+  const [templateHtml, setTemplateHtml] = useState("");
+  const [templateText, setTemplateText] = useState("");
+  const [templateShortcut, setTemplateShortcut] = useState("");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
+  const [settingsBaselines, setSettingsBaselines] = useState<SettingsBaseline>({
+    account: "",
+    sending: "",
+    rules: "",
+    templates: "",
+    windows: "",
+    supabase: "",
+    updates: "",
+  });
   const [rules, setRules] = useState<MailRuleEntry[]>([]);
   const [customFolders, setCustomFolders] = useState<CustomFolderEntry[]>([]);
   const [ruleFolderId, setRuleFolderId] = useState("");
@@ -496,6 +577,11 @@ export default function Home() {
   const [settingsSupabaseManagementToken, setSettingsSupabaseManagementToken] = useState("");
   const [settingsHasSupabaseKey, setSettingsHasSupabaseKey] = useState(false);
   const [settingsHasSupabaseManagementToken, setSettingsHasSupabaseManagementToken] = useState(false);
+  const [settingsAutoUpdateEnabled, setSettingsAutoUpdateEnabled] = useState(false);
+  const [settingsUpdateManifestUrl, setSettingsUpdateManifestUrl] = useState("");
+  const [updateStatusMessage, setUpdateStatusMessage] = useState("");
+  const [updateReady, setUpdateReady] = useState(false);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [settingsStartWithWindows, setSettingsStartWithWindows] = useState(false);
   const [settingsMailtoRegistered, setSettingsMailtoRegistered] = useState(false);
   const [settingsIsPackaged, setSettingsIsPackaged] = useState(false);
@@ -515,6 +601,51 @@ export default function Home() {
     return [...byId.values()];
   }, [inbox, sent]);
 
+  const settingsSnapshots: SettingsBaseline = {
+    account: JSON.stringify({
+      from: settingsFrom.trim(),
+      signature: settingsSignature,
+      identities: materializedSettingsIdentities(),
+      apiKeyChanged: Boolean(settingsApiKey.trim()),
+    }),
+    sending: JSON.stringify({ undoSendSeconds: settingsUndoSendSeconds }),
+    rules: JSON.stringify({
+      name: ruleName,
+      field: ruleField,
+      operator: ruleOperator,
+      value: ruleValue,
+      action: ruleAction,
+      actionValue: ruleFolderId,
+    }),
+    templates: JSON.stringify({
+      id: templateId,
+      name: templateName,
+      subject: templateSubject,
+      html: templateHtml,
+      text: templateText,
+      shortcut: templateShortcut,
+    }),
+    windows: JSON.stringify({
+      startWithWindows: settingsStartWithWindows,
+      mailtoRegistered: settingsMailtoRegistered,
+    }),
+    supabase: JSON.stringify({
+      url: settingsSupabaseUrl.trim(),
+      projectRef: settingsSupabaseProjectRef.trim(),
+      keyChanged: Boolean(settingsSupabaseKey.trim()),
+      managementTokenChanged: Boolean(settingsSupabaseManagementToken.trim()),
+    }),
+    updates: JSON.stringify({
+      enabled: settingsAutoUpdateEnabled,
+      manifestUrl: settingsUpdateManifestUrl.trim(),
+    }),
+  };
+
+  const settingsBaselineKey = settingsTab === "data" ? null : settingsTab;
+  const activeSettingsDirty = settingsBaselineKey
+    ? settingsSnapshots[settingsBaselineKey] !== settingsBaselines[settingsBaselineKey]
+    : false;
+
   const conversationIndex = useMemo(
     () => buildConversationIndex(allMail.filter((mail) => !deletedIds.includes(mail.id))),
     [allMail, deletedIds],
@@ -530,7 +661,7 @@ export default function Home() {
   const filteredContacts = useMemo(() => {
     const term = contactSearch.trim().toLowerCase();
     if (!term) return contacts;
-    return contacts.filter((contact) => `${contact.name} ${contact.email}`.toLowerCase().includes(term));
+    return contacts.filter((contact) => `${contact.name} ${contact.email} ${contact.company} ${contact.phone} ${contact.tags.join(" ")}`.toLowerCase().includes(term));
   }, [contactSearch, contacts]);
 
   useEffect(() => {
@@ -538,12 +669,13 @@ export default function Home() {
       void (async () => {
         if (window.maildesk) {
           try {
-            const [snapshot, currentSettings, queued, storedDrafts, storedFolders] = await Promise.all([
+            const [snapshot, currentSettings, queued, storedDrafts, storedFolders, storedTemplates] = await Promise.all([
               window.maildesk.getLocalSnapshot(),
               window.maildesk.getSettings(),
               window.maildesk.getOutbox(),
               window.maildesk.listDrafts(),
               window.maildesk.listCustomFolders(),
+              window.maildesk.listTemplates(),
             ]);
             const storedDraft = storedDrafts[0] || null;
             setInbox(snapshot.messages.filter((mail) => mail.direction !== "outbound") as MailItem[]);
@@ -551,6 +683,7 @@ export default function Home() {
             setOutbox(queued as OutboxEntry[]);
             setDrafts(storedDrafts as DraftEntry[]);
             setCustomFolders(storedFolders as CustomFolderEntry[]);
+            setTemplates(storedTemplates as MailTemplateEntry[]);
             setReadIds(snapshot.readIds);
             setStarredIds(snapshot.starredIds);
             setArchivedIds(snapshot.archivedIds);
@@ -816,6 +949,7 @@ export default function Home() {
         if (newMessages.length > 0 && window.maildesk) {
           const latest = newMessages[0];
           void window.maildesk.notifyNewMail({
+            id: latest.id,
             count: newMessages.length,
             title: senderName(latest.from),
             body: latest.subject || "Nouveau message",
@@ -1339,7 +1473,34 @@ export default function Home() {
       return;
     }
     if (payload.action === "contacts") return void openContacts();
+    if (payload.action === "calendar") return void openCalendar();
     if (payload.action === "settings") return void openSettings();
+    if (payload.action === "notification-mark-read" && payload.id) {
+      setReadIds((ids) => addId(ids, payload.id!));
+      return;
+    }
+    if (payload.action === "open-mail-by-id" && payload.id) {
+      let target = allMail.find((item) => item.id === payload.id);
+      if (!target && window.maildesk) {
+        const local = await window.maildesk.getLocalMail(payload.id) as MailItem | null;
+        if (local) {
+          target = local;
+          if ((local as MailItem & { direction?: string }).direction === "outbound") {
+            setSent((items) => mergeMailLists(items, [local]));
+          } else {
+            setInbox((items) => mergeMailLists(items, [local]));
+          }
+        }
+      }
+      if (target) await openMail(target);
+      return;
+    }
+    if (payload.action === "update-ready") {
+      await openSettings();
+      setSettingsTab("updates");
+      setUpdateStatusMessage(payload.text || "Une mise à jour est prête à être installée.");
+      return;
+    }
     if (payload.action === "backup-export") return void exportLocalBackup();
     if (payload.action === "backup-restore") return void restoreLocalBackup();
     if (payload.action === "data-folder") return void openLocalDataFolder();
@@ -1805,6 +1966,11 @@ export default function Home() {
     setContactSearch("");
     setContactName("");
     setContactEmail("");
+    setContactCompany("");
+    setContactPhone("");
+    setContactNotes("");
+    setContactTags("");
+    setEditingContactEmail("");
     setContacts(await window.maildesk.listContacts(500) as ContactEntry[]);
     setContactsOpen(true);
     setSidebarOpen(false);
@@ -1828,17 +1994,44 @@ export default function Home() {
     setComposeOpen(true);
   }
 
+  function editContactEntry(contact: ContactEntry) {
+    setEditingContactEmail(contact.email);
+    setContactName(contact.name);
+    setContactEmail(contact.email);
+    setContactCompany(contact.company);
+    setContactPhone(contact.phone);
+    setContactNotes(contact.notes);
+    setContactTags(contact.tags.join(", "));
+  }
+
+  function resetContactEditor() {
+    setEditingContactEmail("");
+    setContactName("");
+    setContactEmail("");
+    setContactCompany("");
+    setContactPhone("");
+    setContactNotes("");
+    setContactTags("");
+  }
+
   async function saveContactEntry() {
     if (!window.maildesk || !contactEmail.trim()) return;
     try {
+      const existing = contacts.find((item) => item.email === editingContactEmail || item.email === contactEmail.trim().toLowerCase());
       await window.maildesk.saveContact({
         email: contactEmail,
         name: contactName,
-        isFavorite: true,
+        company: contactCompany,
+        phone: contactPhone,
+        notes: contactNotes,
+        tags: contactTags.split(",").map((item) => item.trim()).filter(Boolean),
+        isFavorite: existing?.isFavorite ?? false,
       });
+      if (editingContactEmail && editingContactEmail !== contactEmail.trim().toLowerCase()) {
+        await window.maildesk.deleteContact(editingContactEmail);
+      }
       setContacts(await window.maildesk.listContacts(500) as ContactEntry[]);
-      setContactName("");
-      setContactEmail("");
+      resetContactEditor();
       void window.maildesk.syncNow();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Impossible d’enregistrer le contact.");
@@ -1850,6 +2043,10 @@ export default function Home() {
     await window.maildesk.saveContact({
       email: contact.email,
       name: contact.name,
+      company: contact.company,
+      phone: contact.phone,
+      notes: contact.notes,
+      tags: contact.tags,
       isFavorite: !contact.isFavorite,
     });
     setContacts(await window.maildesk.listContacts(500) as ContactEntry[]);
@@ -1865,7 +2062,10 @@ export default function Home() {
   }
 
   async function addRule() {
-    if (!window.maildesk || !ruleValue.trim()) return;
+    if (!window.maildesk || !ruleValue.trim() || (ruleAction === "move_to_folder" && !ruleFolderId)) {
+      setSettingsMessage("Complétez la condition et, si nécessaire, le dossier cible.");
+      return false;
+    }
     try {
       await window.maildesk.saveRule({
         name: ruleName,
@@ -1878,12 +2078,178 @@ export default function Home() {
       });
       setRules(await window.maildesk.listRules() as MailRuleEntry[]);
       setRuleName("");
+      setRuleField("from");
+      setRuleOperator("contains");
       setRuleValue("");
+      setRuleAction("archive");
       setRuleFolderId("");
+      setSettingsMessage("Règle enregistrée.");
       void window.maildesk.syncNow();
+      return true;
     } catch (err) {
       setSettingsMessage(err instanceof Error ? err.message : "Impossible de créer la règle.");
+      return false;
     }
+  }
+
+  function selectTemplateForEditing(template: MailTemplateEntry) {
+    setTemplateId(template.id);
+    setTemplateName(template.name);
+    setTemplateSubject(template.subject);
+    setTemplateHtml(template.html);
+    setTemplateText(template.text);
+    setTemplateShortcut(template.shortcut);
+    setSettingsBaselines((current) => ({
+      ...current,
+      templates: JSON.stringify({
+        id: template.id,
+        name: template.name,
+        subject: template.subject,
+        html: template.html,
+        text: template.text,
+        shortcut: template.shortcut,
+      }),
+    }));
+  }
+
+  function resetTemplateEditor() {
+    setTemplateId("");
+    setTemplateName("");
+    setTemplateSubject("");
+    setTemplateHtml("");
+    setTemplateText("");
+    setTemplateShortcut("");
+    setSettingsBaselines((current) => ({
+      ...current,
+      templates: JSON.stringify({ id: "", name: "", subject: "", html: "", text: "", shortcut: "" }),
+    }));
+  }
+
+  async function saveTemplateEditor() {
+    if (!window.maildesk) return;
+    if (!templateName.trim()) {
+      setSettingsMessage("Donnez un nom au modèle avant de l’enregistrer.");
+      return;
+    }
+    try {
+      const saved = await window.maildesk.saveTemplate({
+        id: templateId || undefined,
+        name: templateName,
+        subject: templateSubject,
+        html: templateHtml,
+        text: templateText,
+        shortcut: templateShortcut,
+      }) as MailTemplateEntry;
+      setTemplates(await window.maildesk.listTemplates() as MailTemplateEntry[]);
+      selectTemplateForEditing(saved);
+      setSettingsMessage("Modèle enregistré.");
+      void window.maildesk.syncNow();
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : "Impossible d’enregistrer le modèle.");
+    }
+  }
+
+  async function deleteTemplateEntry(id: string) {
+    if (!window.maildesk) return;
+    await window.maildesk.deleteTemplate(id);
+    setTemplates(await window.maildesk.listTemplates() as MailTemplateEntry[]);
+    if (templateId === id) resetTemplateEditor();
+    void window.maildesk.syncNow();
+  }
+
+  function applyTemplate(template: MailTemplateEntry) {
+    setCompose((current) => ({
+      ...current,
+      subject: current.subject || template.subject,
+      html: template.html ? `${template.html}${current.html ? `<p><br></p>${current.html}` : ""}` : current.html,
+      text: template.text ? `${template.text}${current.text ? `\\n\\n${current.text}` : ""}` : current.text,
+    }));
+  }
+
+  function localDateTimeValue(value: Date) {
+    const offset = value.getTimezoneOffset() * 60_000;
+    return new Date(value.getTime() - offset).toISOString().slice(0, 16);
+  }
+
+  function resetCalendarEditor() {
+    const start = new Date(Date.now() + 60 * 60 * 1000);
+    start.setMinutes(0, 0, 0);
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+    setEditingCalendarId("");
+    setCalendarTitle("");
+    setCalendarDescription("");
+    setCalendarLocation("");
+    setCalendarStart(localDateTimeValue(start));
+    setCalendarEnd(localDateTimeValue(end));
+    setCalendarAttendees("");
+    setCalendarAllDay(false);
+  }
+
+  async function openCalendar() {
+    if (!window.maildesk) {
+      setError("Le calendrier local est disponible dans l’application Electron.");
+      return;
+    }
+    setCalendarEvents(await window.maildesk.listCalendarEvents() as CalendarEventEntry[]);
+    resetCalendarEditor();
+    setCalendarOpen(true);
+    setSidebarOpen(false);
+  }
+
+  function editCalendarEvent(event: CalendarEventEntry) {
+    setEditingCalendarId(event.id);
+    setCalendarTitle(event.title);
+    setCalendarDescription(event.description);
+    setCalendarLocation(event.location);
+    setCalendarStart(localDateTimeValue(new Date(event.startAt)));
+    setCalendarEnd(localDateTimeValue(new Date(event.endAt)));
+    setCalendarAttendees(event.attendees.join(", "));
+    setCalendarAllDay(event.allDay);
+  }
+
+  async function saveCalendarEntry() {
+    if (!window.maildesk || !calendarTitle.trim() || !calendarStart || !calendarEnd) return;
+    try {
+      await window.maildesk.saveCalendarEvent({
+        id: editingCalendarId || undefined,
+        title: calendarTitle,
+        description: calendarDescription,
+        location: calendarLocation,
+        startAt: new Date(calendarStart).toISOString(),
+        endAt: new Date(calendarEnd).toISOString(),
+        allDay: calendarAllDay,
+        attendees: calendarAttendees.split(/[;,]/).map((item) => item.trim()).filter(Boolean),
+      });
+      setCalendarEvents(await window.maildesk.listCalendarEvents() as CalendarEventEntry[]);
+      resetCalendarEditor();
+      void window.maildesk.syncNow();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Impossible d’enregistrer l’événement.");
+    }
+  }
+
+  async function deleteCalendarEntry(id: string) {
+    if (!window.maildesk) return;
+    await window.maildesk.deleteCalendarEvent(id);
+    setCalendarEvents(await window.maildesk.listCalendarEvents() as CalendarEventEntry[]);
+    if (editingCalendarId === id) resetCalendarEditor();
+    void window.maildesk.syncNow();
+  }
+
+  async function importCalendarIcs() {
+    if (!window.maildesk) return;
+    const result = await window.maildesk.importCalendarIcs();
+    if (result.ok) {
+      setCalendarEvents(await window.maildesk.listCalendarEvents() as CalendarEventEntry[]);
+      setError(`${result.imported || 0} événement${(result.imported || 0) > 1 ? "s" : ""} importé${(result.imported || 0) > 1 ? "s" : ""}.`);
+      void window.maildesk.syncNow();
+    }
+  }
+
+  async function exportCalendarIcs() {
+    if (!window.maildesk) return;
+    const result = await window.maildesk.exportCalendarIcs();
+    if (result.ok && result.path) setError(`Calendrier exporté : ${result.path}`);
   }
 
   async function toggleRule(rule: MailRuleEntry) {
@@ -1996,28 +2362,6 @@ export default function Home() {
     });
   }
 
-  async function updateWindowsStartup(enabled: boolean) {
-    if (!window.maildesk) return;
-    const result = await window.maildesk.setWindowsStartup(enabled);
-    setSettingsStartWithWindows(result.openAtLogin);
-    setSettingsIsPackaged(result.isPackaged);
-    setSettingsMessage(result.ok
-      ? (result.openAtLogin ? "MailDesk démarrera avec Windows." : "Démarrage automatique désactivé.")
-      : (result.message || "Option disponible dans la version Windows installée."));
-  }
-
-  async function updateMailtoRegistration(enabled: boolean) {
-    if (!window.maildesk) return;
-    const result = await window.maildesk.setMailtoHandler(enabled);
-    setSettingsMailtoRegistered(result.mailtoRegistered);
-    setSettingsIsPackaged(result.isPackaged);
-    setSettingsMessage(result.mailtoRegistered
-      ? "MailDesk est enregistré comme gestionnaire mailto:."
-      : enabled
-        ? "Windows n’a pas accepté MailDesk comme gestionnaire mailto:. Vérifiez les Applications par défaut."
-        : "Gestionnaire mailto: MailDesk désactivé.");
-  }
-
   async function exportLocalBackup() {
     if (!window.maildesk) return;
     setSettingsMessage("Création de la sauvegarde...");
@@ -2050,12 +2394,14 @@ export default function Home() {
       }
 
       const snapshot = result.snapshot;
-      const [restoredDrafts, restoredOutbox, restoredContacts, restoredFolders, restoredRules, restoredBlocked] = await Promise.all([
+      const [restoredDrafts, restoredOutbox, restoredContacts, restoredFolders, restoredRules, restoredTemplates, restoredCalendar, restoredBlocked] = await Promise.all([
         window.maildesk.listDrafts(),
         window.maildesk.getOutbox(),
         window.maildesk.listContacts(500),
         window.maildesk.listCustomFolders(),
         window.maildesk.listRules(),
+        window.maildesk.listTemplates(),
+        window.maildesk.listCalendarEvents(),
         window.maildesk.listBlockedSenders(),
       ]);
 
@@ -2073,6 +2419,8 @@ export default function Home() {
       setContacts(restoredContacts as ContactEntry[]);
       setCustomFolders(restoredFolders as CustomFolderEntry[]);
       setRules(restoredRules as MailRuleEntry[]);
+      setTemplates(restoredTemplates as MailTemplateEntry[]);
+      setCalendarEvents(restoredCalendar as CalendarEventEntry[]);
       setBlockedSenders(restoredBlocked);
       setSelected(null);
       setDetail(null);
@@ -2097,39 +2445,95 @@ export default function Home() {
 
   async function openSettings() {
     setSettingsMessage("");
+    setUpdateStatusMessage("");
     setSettingsApiKey("");
     setSettingsSupabaseKey("");
     setSettingsSupabaseManagementToken("");
+    setSettingsTab("account");
+    setRuleName("");
+    setRuleField("from");
+    setRuleOperator("contains");
+    setRuleValue("");
+    setRuleAction("archive");
+    setRuleFolderId("");
+    resetTemplateEditor();
+
     if (window.maildesk) {
       try {
-        const [current, currentRules, currentBlockedSenders, windowsIntegration, appInfo] = await Promise.all([
+        const [current, currentRules, currentTemplates, currentBlockedSenders, windowsIntegration, appInfo] = await Promise.all([
           window.maildesk.getSettings(),
           window.maildesk.listRules(),
+          window.maildesk.listTemplates(),
           window.maildesk.listBlockedSenders(),
           window.maildesk.getWindowsIntegration(),
           window.maildesk.getAppInfo(),
         ]);
         setRules(currentRules as MailRuleEntry[]);
+        setTemplates(currentTemplates as MailTemplateEntry[]);
         setBlockedSenders(currentBlockedSenders);
+
         const currentIdentities = current.identities?.length
           ? current.identities
           : [{ id: "default", name: "Principal", from: current.from, signature: current.signature || "", isDefault: true }];
         const defaultIdentity = defaultIdentityOf(currentIdentities, current.from, current.signature || "");
+        const loadedFrom = defaultIdentity?.from || current.from;
+        const loadedSignature = defaultIdentity?.signature || current.signature || "";
+        const loadedUndo = Number(current.undoSendSeconds ?? 10);
+        const loadedSupabaseUrl = current.supabaseUrl || "";
+        const loadedProjectRef = current.supabaseProjectRef || "";
+        const loadedUpdateEnabled = Boolean(current.autoUpdateEnabled);
+        const loadedManifestUrl = current.updateManifestUrl || "";
+
         setSettingsIdentities(currentIdentities);
-        setSettingsFrom(defaultIdentity?.from || current.from);
+        setSettingsFrom(loadedFrom);
         setSettingsHasApiKey(current.hasApiKey);
-        setSettingsSignature(defaultIdentity?.signature || current.signature || "");
-        setSettingsSupabaseUrl(current.supabaseUrl || "");
-        setSettingsSupabaseProjectRef(current.supabaseProjectRef || "");
+        setSettingsSignature(loadedSignature);
+        setSettingsSupabaseUrl(loadedSupabaseUrl);
+        setSettingsSupabaseProjectRef(loadedProjectRef);
         setSettingsHasSupabaseKey(current.hasSupabaseKey);
         setSettingsHasSupabaseManagementToken(current.hasSupabaseManagementToken);
-        setSettingsUndoSendSeconds(Number(current.undoSendSeconds ?? 10));
+        setSettingsUndoSendSeconds(loadedUndo);
+        setSettingsAutoUpdateEnabled(loadedUpdateEnabled);
+        setSettingsUpdateManifestUrl(loadedManifestUrl);
         setSettingsStartWithWindows(windowsIntegration.openAtLogin);
         setSettingsMailtoRegistered(windowsIntegration.mailtoRegistered);
         setSettingsIsPackaged(windowsIntegration.isPackaged);
         setSettingsAppVersion(appInfo.version || "");
         setSettingsUserDataPath(appInfo.userDataPath || "");
         setDatabasePath(current.databasePath || appInfo.databasePath || "");
+
+        setSettingsBaselines({
+          account: JSON.stringify({
+            from: loadedFrom.trim(),
+            signature: loadedSignature,
+            identities: currentIdentities,
+            apiKeyChanged: false,
+          }),
+          sending: JSON.stringify({ undoSendSeconds: loadedUndo }),
+          rules: JSON.stringify({
+            name: "",
+            field: "from",
+            operator: "contains",
+            value: "",
+            action: "archive",
+            actionValue: "",
+          }),
+          templates: JSON.stringify({ id: "", name: "", subject: "", html: "", text: "", shortcut: "" }),
+          windows: JSON.stringify({
+            startWithWindows: windowsIntegration.openAtLogin,
+            mailtoRegistered: windowsIntegration.mailtoRegistered,
+          }),
+          supabase: JSON.stringify({
+            url: loadedSupabaseUrl.trim(),
+            projectRef: loadedProjectRef.trim(),
+            keyChanged: false,
+            managementTokenChanged: false,
+          }),
+          updates: JSON.stringify({
+            enabled: loadedUpdateEnabled,
+            manifestUrl: loadedManifestUrl.trim(),
+          }),
+        });
       } catch (err) {
         setSettingsMessage(err instanceof Error ? err.message : "Impossible de lire les paramètres Electron");
       }
@@ -2182,6 +2586,16 @@ export default function Home() {
 
       setSettingsSupabaseKey("");
       setSettingsSupabaseManagementToken("");
+      const savedProjectRef = result.supabaseProjectRef || settingsSupabaseProjectRef;
+      setSettingsBaselines((current) => ({
+        ...current,
+        supabase: JSON.stringify({
+          url: settingsSupabaseUrl.trim(),
+          projectRef: savedProjectRef.trim(),
+          keyChanged: false,
+          managementTokenChanged: false,
+        }),
+      }));
       setSettingsMessage(result.message);
 
       const snapshot = await window.maildesk.getLocalSnapshot();
@@ -2201,48 +2615,160 @@ export default function Home() {
     }
   }
 
-  async function saveSettings(event: FormEvent) {
-    event.preventDefault();
-    if (!window.maildesk) {
-      setSettingsMessage("Dans le navigateur, configure RESEND_API_KEY et RESEND_FROM dans .env.local.");
-      return;
+  async function checkUpdatesNow() {
+    if (!window.maildesk) return;
+    setCheckingUpdates(true);
+    setUpdateStatusMessage("Recherche d’une mise à jour...");
+    try {
+      const result = await window.maildesk.checkForUpdates();
+      setUpdateReady(Boolean(result.available && result.downloaded));
+      setUpdateStatusMessage(result.available
+        ? `${result.message}${result.downloaded ? " Téléchargement vérifié et prêt à installer." : ""}${result.notes ? ` — ${result.notes}` : ""}`
+        : result.message);
+    } catch (err) {
+      setUpdateReady(false);
+      setUpdateStatusMessage(err instanceof Error ? err.message : "Recherche de mise à jour impossible.");
+    } finally {
+      setCheckingUpdates(false);
     }
+  }
+
+  async function installReadyUpdate() {
+    if (!window.maildesk) return;
+    const result = await window.maildesk.installPendingUpdate();
+    if (!result.ok) setUpdateStatusMessage(result.message || "Aucune mise à jour prête.");
+  }
+
+  async function saveActiveSettingsTab() {
+    if (!window.maildesk || settingsTab === "data" || !activeSettingsDirty) return;
     setSavingSettings(true);
     setSettingsMessage("");
+
     try {
-      const result = await window.maildesk.saveSettings({
-        from: settingsFrom,
-        apiKey: settingsApiKey || undefined,
-        signature: settingsSignature,
-        identities: materializedSettingsIdentities(),
-        undoSendSeconds: settingsUndoSendSeconds,
-        supabaseUrl: settingsSupabaseUrl,
-        supabaseKey: settingsSupabaseKey || undefined,
-        supabaseProjectRef: settingsSupabaseProjectRef,
-        supabaseManagementToken: settingsSupabaseManagementToken || undefined,
-      });
-      setSettingsHasApiKey(result.hasApiKey);
-      setSettingsHasSupabaseKey(result.hasSupabaseKey);
-      setSettingsHasSupabaseManagementToken(result.hasSupabaseManagementToken);
-      setSettingsSupabaseProjectRef(result.supabaseProjectRef || settingsSupabaseProjectRef);
-      const savedIdentities = result.identities ?? materializedSettingsIdentities();
-      const savedDefault = defaultIdentityOf(savedIdentities, result.from, result.signature || "");
-      setIdentities(savedIdentities);
-      setSettingsIdentities(savedIdentities);
-      setSettingsFrom(savedDefault?.from || result.from);
-      setSettingsSignature(savedDefault?.signature || result.signature || "");
-      setSignature(savedDefault?.signature || result.signature || "");
-      setUndoSendSeconds(Number(result.undoSendSeconds ?? settingsUndoSendSeconds));
-      setSettingsUndoSendSeconds(Number(result.undoSendSeconds ?? settingsUndoSendSeconds));
-      setSettingsApiKey("");
-      setSettingsSupabaseKey("");
-      setSettingsSupabaseManagementToken("");
-      const syncMessage = result.sync?.message ? ` ${result.sync.message}` : "";
-      setSettingsMessage(result.requiresDevRestart
-        ? `Enregistré. En mode développement, relance npm run electron:dev pour appliquer la clé Resend.${syncMessage}`
-        : `Paramètres enregistrés et appliqués.${syncMessage}`);
+      if (settingsTab === "rules") {
+        const saved = await addRule();
+        if (saved) {
+          setSettingsBaselines((current) => ({
+            ...current,
+            rules: JSON.stringify({
+              name: "",
+              field: "from",
+              operator: "contains",
+              value: "",
+              action: "archive",
+              actionValue: "",
+            }),
+          }));
+        }
+        return;
+      }
+
+      if (settingsTab === "templates") {
+        await saveTemplateEditor();
+        return;
+      }
+
+      if (settingsTab === "windows") {
+        const startup = await window.maildesk.setWindowsStartup(settingsStartWithWindows);
+        const mailto = await window.maildesk.setMailtoHandler(settingsMailtoRegistered);
+        setSettingsStartWithWindows(startup.openAtLogin);
+        setSettingsMailtoRegistered(mailto.mailtoRegistered);
+        const baseline = JSON.stringify({
+          startWithWindows: startup.openAtLogin,
+          mailtoRegistered: mailto.mailtoRegistered,
+        });
+        setSettingsBaselines((current) => ({ ...current, windows: baseline }));
+        setSettingsMessage("Intégration Windows enregistrée.");
+        return;
+      }
+
+      if (settingsTab === "account") {
+        const result = await window.maildesk.saveSettings({
+          from: settingsFrom,
+          apiKey: settingsApiKey || undefined,
+          signature: settingsSignature,
+          identities: materializedSettingsIdentities(),
+        });
+        const savedIdentities = result.identities ?? materializedSettingsIdentities();
+        const savedDefault = defaultIdentityOf(savedIdentities, result.from, result.signature || "");
+        const savedFrom = savedDefault?.from || result.from;
+        const savedSignature = savedDefault?.signature || result.signature || "";
+        setSettingsHasApiKey(result.hasApiKey);
+        setIdentities(savedIdentities);
+        setSettingsIdentities(savedIdentities);
+        setSettingsFrom(savedFrom);
+        setSettingsSignature(savedSignature);
+        setSignature(savedSignature);
+        setSettingsApiKey("");
+        setSettingsBaselines((current) => ({
+          ...current,
+          account: JSON.stringify({
+            from: savedFrom.trim(),
+            signature: savedSignature,
+            identities: savedIdentities,
+            apiKeyChanged: false,
+          }),
+        }));
+        setSettingsMessage("Compte et identités enregistrés.");
+        return;
+      }
+
+      if (settingsTab === "sending") {
+        const result = await window.maildesk.saveSettings({ undoSendSeconds: settingsUndoSendSeconds });
+        const savedUndo = Number(result.undoSendSeconds ?? settingsUndoSendSeconds);
+        setUndoSendSeconds(savedUndo);
+        setSettingsUndoSendSeconds(savedUndo);
+        setSettingsBaselines((current) => ({
+          ...current,
+          sending: JSON.stringify({ undoSendSeconds: savedUndo }),
+        }));
+        setSettingsMessage("Préférences d’envoi enregistrées.");
+        return;
+      }
+
+      if (settingsTab === "supabase") {
+        const result = await window.maildesk.saveSettings({
+          supabaseUrl: settingsSupabaseUrl,
+          supabaseKey: settingsSupabaseKey || undefined,
+          supabaseProjectRef: settingsSupabaseProjectRef,
+          supabaseManagementToken: settingsSupabaseManagementToken || undefined,
+        });
+        const savedRef = result.supabaseProjectRef || settingsSupabaseProjectRef;
+        setSettingsHasSupabaseKey(result.hasSupabaseKey);
+        setSettingsHasSupabaseManagementToken(result.hasSupabaseManagementToken);
+        setSettingsSupabaseProjectRef(savedRef);
+        setSettingsSupabaseKey("");
+        setSettingsSupabaseManagementToken("");
+        setSettingsBaselines((current) => ({
+          ...current,
+          supabase: JSON.stringify({
+            url: settingsSupabaseUrl.trim(),
+            projectRef: savedRef.trim(),
+            keyChanged: false,
+            managementTokenChanged: false,
+          }),
+        }));
+        setSettingsMessage(result.sync?.message || "Synchronisation Supabase enregistrée.");
+        return;
+      }
+
+      if (settingsTab === "updates") {
+        const result = await window.maildesk.saveSettings({
+          autoUpdateEnabled: settingsAutoUpdateEnabled,
+          updateManifestUrl: settingsUpdateManifestUrl,
+        });
+        const enabled = Boolean(result.autoUpdateEnabled);
+        const manifestUrl = result.updateManifestUrl || "";
+        setSettingsAutoUpdateEnabled(enabled);
+        setSettingsUpdateManifestUrl(manifestUrl);
+        setSettingsBaselines((current) => ({
+          ...current,
+          updates: JSON.stringify({ enabled, manifestUrl: manifestUrl.trim() }),
+        }));
+        setSettingsMessage("Paramètres de mise à jour enregistrés.");
+      }
     } catch (err) {
-      setSettingsMessage(err instanceof Error ? err.message : "Impossible d'enregistrer les paramètres");
+      setSettingsMessage(err instanceof Error ? err.message : "Impossible d'enregistrer ces paramètres.");
     } finally {
       setSavingSettings(false);
     }
@@ -2366,7 +2892,7 @@ export default function Home() {
         <button className="icon-button mobile-only" onClick={() => setSidebarOpen((value) => !value)} aria-label="Menu">
           <Menu size={20} />
         </button>
-        <div className="brand-mark">M</div>
+        <Image className="brand-logo" src="/logo_app_mail_resend_64.webp" width={34} height={34} alt="" priority />
         <div className="brand-name">MailDesk</div>
         <div className="global-search">
           <Search size={18} />
@@ -2472,6 +2998,9 @@ export default function Home() {
             <button onClick={() => void openContacts()}>
               <ContactRound size={18} /><span>Contacts</span>
             </button>
+            <button onClick={() => void openCalendar()}>
+              <CalendarDays size={18} /><span>Calendrier</span>
+            </button>
           </nav>
           <div className="shortcut-hint">
             <span>Ctrl+N</span> Nouveau message
@@ -2555,6 +3084,9 @@ export default function Home() {
                     event.dataTransfer.setData("text/plain", mail.id);
                   }}
                   onClick={() => draftItem ? openSavedDraft(draftItem) : queued ? void editOutboxItem(queued) : void openMail(mail)}
+                  onDoubleClick={() => {
+                    if (!queued && !draftItem) void window.maildesk?.openMessageWindow(mail.id);
+                  }}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     if (queued || draftItem) return;
@@ -2615,6 +3147,7 @@ export default function Home() {
                 <button onClick={() => void startReplyFor(detail)}><Reply size={17} /> Répondre</button>
                 <button onClick={() => void startReplyFor(detail, true)}><ReplyAll size={17} /> Répondre à tous</button>
                 <button onClick={() => void startForwardFor(detail)}><Forward size={17} /> Transférer</button>
+                {typeof window !== "undefined" && window.maildesk && <button onClick={() => void window.maildesk?.openMessageWindow(detail.id)} title="Ouvrir dans une nouvelle fenêtre"><ExternalLink size={17} /> Fenêtre</button>}
                 <button onClick={() => void printCurrentConversation()} title="Imprimer la conversation"><Printer size={17} /> Imprimer</button>
                 <button onClick={() => void exportCurrentConversationPdf()} title="Exporter la conversation en PDF"><FileDown size={17} /> PDF</button>
                 <button onClick={() => void exportCurrentMessageEml()} title="Exporter ce message au format EML"><FileText size={17} /> EML</button>
@@ -2830,6 +3363,25 @@ export default function Home() {
                   )}
                 </div>
               )}
+              {templates.length > 0 && (
+                <label className="quick-template-picker" title="Modèle / réponse rapide">
+                  <Zap size={17} />
+                  <select
+                    value=""
+                    onChange={(event) => {
+                      const template = templates.find((item) => item.id === event.target.value);
+                      if (template) applyTemplate(template);
+                    }}
+                  >
+                    <option value="">Réponse rapide...</option>
+                    {templates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.shortcut ? `${template.shortcut} — ` : ""}{template.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <button type="button" className="icon-button" onClick={() => void addAttachments()} title="Ajouter une pièce jointe"><Paperclip size={18} /></button>
               <span className="draft-state">{typeof window !== "undefined" && window.maildesk ? "Brouillon sauvegardé dans maildesk.db" : "Brouillon enregistré automatiquement"}</span>
             </div>
@@ -2848,6 +3400,64 @@ export default function Home() {
         </div>
       )}
 
+      {calendarOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setCalendarOpen(false)}>
+          <section className="calendar-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="settings-header">
+              <div><span className="eyebrow">Agenda local</span><h2>Calendrier MailDesk</h2></div>
+              <div className="calendar-header-actions">
+                <button type="button" onClick={() => void importCalendarIcs()}><Download size={15} /> Importer ICS</button>
+                <button type="button" onClick={() => void exportCalendarIcs()}><FileDown size={15} /> Exporter ICS</button>
+                <button className="icon-button" onClick={() => setCalendarOpen(false)}><X size={18} /></button>
+              </div>
+            </div>
+            <div className="calendar-layout">
+              <aside className="calendar-editor">
+                <div className="calendar-editor-title">
+                  <strong>{editingCalendarId ? "Modifier l’événement" : "Nouvel événement"}</strong>
+                  {editingCalendarId && <button type="button" onClick={resetCalendarEditor}>Nouveau</button>}
+                </div>
+                <label><span>Titre</span><input value={calendarTitle} onChange={(event) => setCalendarTitle(event.target.value)} placeholder="Rendez-vous, relance, réunion..." /></label>
+                <label><span>Début</span><input type="datetime-local" value={calendarStart} onChange={(event) => setCalendarStart(event.target.value)} /></label>
+                <label><span>Fin</span><input type="datetime-local" value={calendarEnd} onChange={(event) => setCalendarEnd(event.target.value)} /></label>
+                <label className="calendar-checkbox"><input type="checkbox" checked={calendarAllDay} onChange={(event) => setCalendarAllDay(event.target.checked)} /><span>Journée entière</span></label>
+                <label><span>Lieu</span><input value={calendarLocation} onChange={(event) => setCalendarLocation(event.target.value)} placeholder="Bureau, visio, adresse..." /></label>
+                <label><span>Participants</span><input value={calendarAttendees} onChange={(event) => setCalendarAttendees(event.target.value)} placeholder="a@exemple.fr, b@exemple.fr" /></label>
+                <label><span>Description</span><textarea value={calendarDescription} onChange={(event) => setCalendarDescription(event.target.value)} placeholder="Notes de l’événement..." /></label>
+                <button className="calendar-save" type="button" onClick={() => void saveCalendarEntry()} disabled={!calendarTitle.trim() || !calendarStart || !calendarEnd}>
+                  <Save size={16} /> Enregistrer
+                </button>
+              </aside>
+              <div className="calendar-agenda">
+                <div className="calendar-agenda-head">
+                  <div><strong>Agenda</strong><span>{calendarEvents.length} événement{calendarEvents.length > 1 ? "s" : ""}</span></div>
+                  <button type="button" onClick={resetCalendarEditor}><Plus size={15} /> Nouveau</button>
+                </div>
+                <div className="calendar-event-list">
+                  {calendarEvents.length === 0 ? (
+                    <div className="empty-state"><CalendarDays size={34} /><strong>Aucun événement</strong><span>Créez un rendez-vous ou importez un fichier ICS.</span></div>
+                  ) : calendarEvents.map((event) => (
+                    <div className="calendar-event-row" key={event.id}>
+                      <button type="button" className="calendar-event-main" onClick={() => editCalendarEvent(event)}>
+                        <time>
+                          <strong>{new Date(event.startAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })}</strong>
+                          <span>{event.allDay ? "Journée" : new Date(event.startAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span>
+                        </time>
+                        <span>
+                          <strong>{event.title}</strong>
+                          <small>{event.location || event.description || "Événement MailDesk"}</small>
+                        </span>
+                      </button>
+                      <button type="button" className="contact-action" title="Supprimer" onClick={() => void deleteCalendarEntry(event.id)}><Trash2 size={15} /></button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
       {contactsOpen && (
         <div className="modal-backdrop" onMouseDown={() => setContactsOpen(false)}>
           <section className="contacts-modal" onMouseDown={(event) => event.stopPropagation()}>
@@ -2861,10 +3471,22 @@ export default function Home() {
               <span>{filteredContacts.length} contact{filteredContacts.length > 1 ? "s" : ""}</span>
             </div>
 
-            <div className="contact-create">
-              <input value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder="Nom" />
-              <input value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} placeholder="email@domaine.fr" type="email" />
-              <button type="button" onClick={() => void saveContactEntry()} disabled={!contactEmail.trim()}><Plus size={15} /> Ajouter</button>
+            <div className="contact-editor">
+              <div className="contact-editor-head">
+                <strong>{editingContactEmail ? "Modifier le contact" : "Nouveau contact"}</strong>
+                {editingContactEmail && <button type="button" onClick={resetContactEditor}>Annuler</button>}
+              </div>
+              <div className="contact-editor-grid">
+                <input value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder="Nom" />
+                <input value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} placeholder="email@domaine.fr" type="email" />
+                <input value={contactCompany} onChange={(event) => setContactCompany(event.target.value)} placeholder="Société" />
+                <input value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} placeholder="Téléphone" />
+                <input className="wide" value={contactTags} onChange={(event) => setContactTags(event.target.value)} placeholder="Tags : client, partenaire, urgent..." />
+                <textarea className="wide" value={contactNotes} onChange={(event) => setContactNotes(event.target.value)} placeholder="Notes internes..." />
+              </div>
+              <button className="contact-save-button" type="button" onClick={() => void saveContactEntry()} disabled={!contactEmail.trim()}>
+                <Save size={15} /> {editingContactEmail ? "Enregistrer" : "Ajouter"}
+              </button>
             </div>
 
             <div className="contacts-list">
@@ -2876,10 +3498,14 @@ export default function Home() {
                     <span className="contact-avatar">{(contact.name || contact.email).slice(0, 2).toUpperCase()}</span>
                     <span className="contact-copy">
                       <strong>{contact.name || contact.email}</strong>
-                      <span>{contact.email}</span>
-                      <small>{contact.source === "manual" ? "Contact enregistré" : contact.timesSeen + " échange" + (contact.timesSeen > 1 ? "s" : "")}</small>
+                      <span>{contact.email}{contact.company ? ` · ${contact.company}` : ""}{contact.phone ? ` · ${contact.phone}` : ""}</span>
+                      <small>
+                        {contact.tags.length > 0 ? `${contact.tags.join(" · ")} · ` : ""}
+                        {contact.source === "manual" ? "Contact enregistré" : contact.timesSeen + " échange" + (contact.timesSeen > 1 ? "s" : "")}
+                      </small>
                     </span>
                   </button>
+                  <button className="contact-action" type="button" title="Modifier" onClick={() => editContactEntry(contact)}><Edit3 size={16} /></button>
                   <button className={contact.isFavorite ? "contact-action favorite" : "contact-action"} type="button" title="Favori" onClick={() => void toggleContactFavorite(contact)}><Star size={16} fill={contact.isFavorite ? "currentColor" : "none"} /></button>
                   <button className="contact-action" type="button" title="Supprimer du carnet" onClick={() => void deleteContactEntry(contact.email)}><Trash2 size={16} /></button>
                 </div>
@@ -2891,210 +3517,172 @@ export default function Home() {
 
       {settingsOpen && (
         <div className="modal-backdrop" onMouseDown={() => setSettingsOpen(false)}>
-          <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="settings-header"><div><span className="eyebrow">Compte</span><h2>Paramètres MailDesk</h2></div><button className="icon-button" onClick={() => setSettingsOpen(false)}><X size={18} /></button></div>
-            <form onSubmit={saveSettings}>
-              <div className="settings-section-title settings-section-first">Identités d’envoi</div>
-              <div className="identity-settings-list">
-                {materializedSettingsIdentities().map((identity) => (
-                  <div className={identity.isDefault ? "identity-settings-card default" : "identity-settings-card"} key={identity.id}>
-                    <div className="identity-settings-head">
-                      <div>
-                        <strong>{identity.isDefault ? "Identité principale" : (identity.name || "Identité secondaire")}</strong>
-                        {identity.isDefault && <span>Par défaut</span>}
-                      </div>
-                      <div className="identity-settings-actions">
-                        {!identity.isDefault && <button type="button" onClick={() => makeIdentityDefault(identity.id)}>Définir par défaut</button>}
-                        {!identity.isDefault && <button type="button" className="danger" onClick={() => deleteIdentitySetting(identity.id)} title="Supprimer l’identité"><Trash2 size={15} /></button>}
-                      </div>
-                    </div>
-                    <div className="identity-settings-grid">
-                      <label>
-                        <span>Nom</span>
-                        <input
-                          value={identity.name}
-                          onChange={(event) => updateIdentitySetting(identity.id, { name: event.target.value })}
-                          placeholder="Commercial, Support, Personnel..."
-                        />
-                      </label>
-                      <label>
-                        <span>Adresse d’envoi Resend</span>
-                        <input
-                          value={identity.isDefault ? settingsFrom : identity.from}
-                          onChange={(event) => identity.isDefault ? setSettingsFrom(event.target.value) : updateIdentitySetting(identity.id, { from: event.target.value })}
-                          placeholder="Nom <mail@votre-domaine.fr>"
-                        />
-                      </label>
-                    </div>
-                    <label>
-                      <span>Signature</span>
-                      <textarea
-                        value={identity.isDefault ? settingsSignature : identity.signature}
-                        onChange={(event) => identity.isDefault ? setSettingsSignature(event.target.value) : updateIdentitySetting(identity.id, { signature: event.target.value })}
-                        placeholder={"Cordialement,\nVotre nom\nEntreprise"}
-                      />
-                    </label>
-                  </div>
-                ))}
-                <button className="add-identity-button" type="button" onClick={addIdentitySetting}><Plus size={15} /> Ajouter une identité</button>
-              </div>
-              <label><span>Clé API Resend</span><input type="password" value={settingsApiKey} onChange={(event) => setSettingsApiKey(event.target.value)} placeholder={settingsHasApiKey ? "Clé déjà enregistrée — laisser vide pour la conserver" : "re_..."} /></label>
-              <div className="settings-section-title">Expéditeurs bloqués</div>
-              <div className="blocked-senders">
-                {blockedSenders.length === 0 ? (
-                  <div className="settings-message">Aucun expéditeur bloqué.</div>
-                ) : blockedSenders.map((sender) => (
-                  <div className="blocked-sender-row" key={sender.email}>
-                    <span><ShieldBan size={15} /><strong>{sender.email}</strong></span>
-                    <button type="button" onClick={() => void unblockMailSender(sender.email)}>Débloquer</button>
-                  </div>
-                ))}
-              </div>
-              <div className="settings-section-title">Règles automatiques</div>
-              <div className="rule-builder">
-                <input value={ruleName} onChange={(event) => setRuleName(event.target.value)} placeholder="Nom de la règle (optionnel)" />
-                <div className="rule-builder-grid">
-                  <select value={ruleField} onChange={(event) => setRuleField(event.target.value as MailRuleEntry["field"])}>
-                    <option value="from">Expéditeur</option>
-                    <option value="subject">Objet</option>
-                    <option value="to">Destinataire</option>
-                  </select>
-                  <select value={ruleOperator} onChange={(event) => setRuleOperator(event.target.value as MailRuleEntry["operator"])}>
-                    <option value="contains">contient</option>
-                    <option value="equals">est exactement</option>
-                    <option value="ends_with">se termine par</option>
-                  </select>
-                  <input value={ruleValue} onChange={(event) => setRuleValue(event.target.value)} placeholder="Valeur à rechercher" />
-                  <select value={ruleAction} onChange={(event) => setRuleAction(event.target.value as MailRuleEntry["action"])}>
-                    <option value="archive">Archiver</option>
-                    <option value="star">Ajouter aux favoris</option>
-                    <option value="read">Marquer comme lu</option>
-                    <option value="trash">Déplacer dans la corbeille</option>
-                    <option value="move_to_folder">Déplacer vers un dossier</option>
-                  </select>
-                </div>
-                {ruleAction === "move_to_folder" && (
-                  <label className="rule-folder-target">
-                    <span>Dossier cible</span>
-                    <select value={ruleFolderId} onChange={(event) => setRuleFolderId(event.target.value)}>
-                      <option value="">Choisir un dossier...</option>
-                      {customFolders.map((customFolder) => <option key={customFolder.id} value={customFolder.id}>{customFolder.name}</option>)}
-                    </select>
-                  </label>
-                )}
-                <div className="rule-builder-actions">
-                  <button type="button" onClick={() => void addRule()} disabled={!ruleValue.trim() || (ruleAction === "move_to_folder" && !ruleFolderId)}><Plus size={14} /> Ajouter la règle</button>
-                  <button type="button" onClick={() => void runRulesNow()} disabled={rules.length === 0}>Appliquer aux messages existants</button>
-                </div>
-              </div>
-              {rules.length > 0 && (
-                <div className="rules-list">
-                  {rules.map((rule) => (
-                    <div className={rule.enabled ? "rule-row" : "rule-row disabled"} key={rule.id}>
-                      <button type="button" className="rule-toggle" onClick={() => void toggleRule(rule)} aria-label={rule.enabled ? "Désactiver la règle" : "Activer la règle"}>
-                        <span className={rule.enabled ? "switch on" : "switch"}><i /></span>
-                      </button>
-                      <div className="rule-copy">
-                        <strong>{rule.name}</strong>
-                        <span>
-                          {rule.field === "from" ? "Expéditeur" : rule.field === "subject" ? "Objet" : "Destinataire"} {rule.operator === "contains" ? "contient" : rule.operator === "equals" ? "est" : "se termine par"} “{rule.value}” → {rule.action === "archive"
-                            ? "Archiver"
-                            : rule.action === "star"
-                              ? "Favori"
-                              : rule.action === "read"
-                                ? "Lu"
-                                : rule.action === "trash"
-                                  ? "Corbeille"
-                                  : `Dossier « ${customFolders.find((item) => item.id === rule.actionValue)?.name || "introuvable"} »`}
-                        </span>
-                      </div>
-                      <button type="button" className="rule-delete" onClick={() => void deleteRuleEntry(rule.id)} title="Supprimer la règle"><Trash2 size={15} /></button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="settings-section-title">Envoi</div>
-              <div className="send-settings">
-                <label>
-                  <span>Délai pour annuler l’envoi</span>
-                  <select value={settingsUndoSendSeconds} onChange={(event) => setSettingsUndoSendSeconds(Number(event.target.value))}>
-                    <option value={0}>Désactivé — envoyer immédiatement</option>
-                    <option value={5}>5 secondes</option>
-                    <option value={10}>10 secondes</option>
-                    <option value={20}>20 secondes</option>
-                    <option value={30}>30 secondes</option>
-                  </select>
-                </label>
-                <p>Avec un délai, le message reste brièvement dans la boîte d’envoi et peut être annulé avant son départ. « Envoyer plus tard » reste disponible indépendamment de ce réglage.</p>
-              </div>
-              <div className="settings-section-title">Intégration Windows</div>
-              <div className="windows-integration-grid">
-                <label className="windows-option">
-                  <input
-                    type="checkbox"
-                    checked={settingsStartWithWindows}
-                    disabled={!settingsIsPackaged}
-                    onChange={(event) => void updateWindowsStartup(event.target.checked)}
-                  />
-                  <span>
-                    <strong>Démarrer avec Windows</strong>
-                    <small>Lance MailDesk automatiquement à l’ouverture de session.</small>
-                  </span>
-                </label>
-                <label className="windows-option">
-                  <input
-                    type="checkbox"
-                    checked={settingsMailtoRegistered}
-                    disabled={!settingsIsPackaged}
-                    onChange={(event) => void updateMailtoRegistration(event.target.checked)}
-                  />
-                  <span>
-                    <strong>Ouvrir les liens mailto: avec MailDesk</strong>
-                    <small>Les liens e-mail de Windows ouvrent directement un nouveau message.</small>
-                  </span>
-                </label>
-              </div>
-              {!settingsIsPackaged && (
-                <div className="security-note">
-                  <strong>Version développement</strong>
-                  <span>Ces options sont activables dans le client Windows installé afin d’éviter d’enregistrer Electron Dev dans Windows.</span>
-                </div>
-              )}
-              <div className="settings-section-title">Données locales & sauvegarde</div>
-              <div className="security-note">
-                <strong>MailDesk {settingsAppVersion || "développement"}</strong>
-                <span>{settingsUserDataPath || databasePath || "Profil MailDesk"}</span>
-                <span>La sauvegarde contient les mails, brouillons, boîte d’envoi, contacts, règles, catégories et états locaux. Les clés API et secrets chiffrés restent dans le profil Windows et ne sont pas exportés.</span>
-              </div>
-              <div className="supabase-actions">
-                <button type="button" className="primary-outline" onClick={() => void exportLocalBackup()}>Exporter une sauvegarde</button>
-                <button type="button" onClick={() => void restoreLocalBackup()}>Restaurer une sauvegarde</button>
-                <button type="button" onClick={() => void openLocalDataFolder()}>Ouvrir le dossier de données</button>
-              </div>
-              <div className="settings-section-title">Synchronisation Supabase (optionnelle)</div>
-              <label><span>URL du projet Supabase</span><input value={settingsSupabaseUrl} onChange={(event) => setSettingsSupabaseUrl(event.target.value)} placeholder="https://xxxx.supabase.co" /></label>
-              <label><span>Project Ref</span><input value={settingsSupabaseProjectRef} onChange={(event) => setSettingsSupabaseProjectRef(event.target.value)} placeholder="Détecté automatiquement depuis l’URL si possible" /></label>
-              <label><span>Clé de synchronisation</span><input type="password" value={settingsSupabaseKey} onChange={(event) => setSettingsSupabaseKey(event.target.value)} placeholder={settingsHasSupabaseKey ? "Clé déjà enregistrée — laisser vide pour la conserver" : "service_role / sb_secret_…"} /></label>
-              <label><span>Token Supabase Management API</span><input type="password" value={settingsSupabaseManagementToken} onChange={(event) => setSettingsSupabaseManagementToken(event.target.value)} placeholder={settingsHasSupabaseManagementToken ? "Token déjà enregistré — laisser vide pour le conserver" : "sbp_… avec permission database_write"} /></label>
-              <div className="security-note">
-                <strong>Initialisation automatique</strong>
-                <span>Avec le token Management API, MailDesk peut créer ou mettre à jour sa table automatiquement puis tester la Data API. La clé de synchronisation et le token de gestion sont chiffrés dans le profil Windows.</span>
-              </div>
-              <div className="supabase-actions">
+          <section className="settings-modal settings-modal-tabbed" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="settings-header settings-tabbed-header">
+              <div><span className="eyebrow">Configuration</span><h2>Paramètres MailDesk</h2></div>
+              <div className="settings-header-actions">
                 <button
                   type="button"
-                  className="primary-outline"
-                  onClick={() => void initializeSupabaseFromSettings()}
-                  disabled={initializingSupabase || !settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey) || !(settingsSupabaseManagementToken || settingsHasSupabaseManagementToken)}
+                  className={activeSettingsDirty ? "settings-save-icon dirty" : "settings-save-icon"}
+                  disabled={!activeSettingsDirty || savingSettings || initializingSupabase}
+                  onClick={() => void saveActiveSettingsTab()}
+                  title={activeSettingsDirty ? "Enregistrer les modifications de cet onglet" : "Aucune modification"}
                 >
-                  {initializingSupabase ? "Initialisation..." : "Créer / réparer les tables"}
+                  <Save size={17} />
+                  <span>{savingSettings ? "Enregistrement..." : activeSettingsDirty ? "Enregistrer" : "Enregistré"}</span>
                 </button>
-                <button type="button" onClick={() => void syncNowFromSettings()} disabled={!settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey)}>Synchroniser maintenant</button>
+                <button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} title="Fermer"><X size={18} /></button>
               </div>
-              <div className="security-note"><strong>{typeof window !== "undefined" && window.maildesk ? "Stockage Windows sécurisé + SQLite local" : "Mode navigateur"}</strong><span>{typeof window !== "undefined" && window.maildesk ? `Les paramètres sensibles sont chiffrés avec safeStorage. Les mails sont conservés localement${databasePath ? ` dans ${databasePath}` : " dans le profil MailDesk"}. Supabase reste facultatif.` : "Utilisez .env.local pour les secrets lorsque l'application tourne dans le navigateur."}</span></div>
-              {settingsMessage && <div className="settings-message">{settingsMessage}</div>}
-              <div className="settings-actions"><button type="button" onClick={() => setSettingsOpen(false)}>Annuler</button><button className="primary" disabled={savingSettings || initializingSupabase}>{savingSettings ? "Enregistrement..." : "Enregistrer"}</button></div>
-            </form>
+            </div>
+
+            <div className="settings-shell">
+              <aside className="settings-side-nav">
+                <button type="button" className={settingsTab === "account" ? "active" : ""} onClick={() => setSettingsTab("account")}><UserRound size={17} /><span><strong>Compte</strong><small>Identités & Resend</small></span></button>
+                <button type="button" className={settingsTab === "sending" ? "active" : ""} onClick={() => setSettingsTab("sending")}><Send size={17} /><span><strong>Envoi</strong><small>Délais & comportement</small></span></button>
+                <button type="button" className={settingsTab === "rules" ? "active" : ""} onClick={() => setSettingsTab("rules")}><Zap size={17} /><span><strong>Règles</strong><small>Tri automatique</small></span></button>
+                <button type="button" className={settingsTab === "templates" ? "active" : ""} onClick={() => setSettingsTab("templates")}><FileText size={17} /><span><strong>Modèles</strong><small>Réponses rapides</small></span></button>
+                <button type="button" className={settingsTab === "windows" ? "active" : ""} onClick={() => setSettingsTab("windows")}><Settings size={17} /><span><strong>Windows</strong><small>Intégration système</small></span></button>
+                <button type="button" className={settingsTab === "data" ? "active" : ""} onClick={() => setSettingsTab("data")}><Database size={17} /><span><strong>Données</strong><small>Sauvegarde locale</small></span></button>
+                <button type="button" className={settingsTab === "supabase" ? "active" : ""} onClick={() => setSettingsTab("supabase")}><Database size={17} /><span><strong>Supabase</strong><small>Cloud & synchronisation</small></span></button>
+                <button type="button" className={settingsTab === "updates" ? "active" : ""} onClick={() => setSettingsTab("updates")}><RefreshCw size={17} /><span><strong>Mises à jour</strong><small>Version & auto-update</small></span></button>
+              </aside>
+
+              <form className="settings-tab-content" onSubmit={(event) => { event.preventDefault(); void saveActiveSettingsTab(); }}>
+                {settingsTab === "account" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title"><div><span className="eyebrow">Compte</span><h3>Identités d’envoi</h3><p>Adresses Resend et signatures utilisées par le composeur.</p></div></div>
+                    <div className="identity-settings-list">
+                      {materializedSettingsIdentities().map((identity) => (
+                        <div className={identity.isDefault ? "identity-settings-card default" : "identity-settings-card"} key={identity.id}>
+                          <div className="identity-settings-head">
+                            <div><strong>{identity.isDefault ? "Identité principale" : (identity.name || "Identité secondaire")}</strong>{identity.isDefault && <span>Par défaut</span>}</div>
+                            <div className="identity-settings-actions">
+                              {!identity.isDefault && <button type="button" onClick={() => makeIdentityDefault(identity.id)}>Définir par défaut</button>}
+                              {!identity.isDefault && <button type="button" className="danger" onClick={() => deleteIdentitySetting(identity.id)} title="Supprimer l’identité"><Trash2 size={15} /></button>}
+                            </div>
+                          </div>
+                          <div className="identity-settings-grid">
+                            <label><span>Nom</span><input value={identity.name} onChange={(event) => updateIdentitySetting(identity.id, { name: event.target.value })} placeholder="Commercial, Support, Personnel..." /></label>
+                            <label><span>Adresse d’envoi Resend</span><input value={identity.isDefault ? settingsFrom : identity.from} onChange={(event) => identity.isDefault ? setSettingsFrom(event.target.value) : updateIdentitySetting(identity.id, { from: event.target.value })} placeholder="Nom <mail@votre-domaine.fr>" /></label>
+                          </div>
+                          <label><span>Signature</span><textarea value={identity.isDefault ? settingsSignature : identity.signature} onChange={(event) => identity.isDefault ? setSettingsSignature(event.target.value) : updateIdentitySetting(identity.id, { signature: event.target.value })} placeholder={"Cordialement,\nVotre nom\nEntreprise"} /></label>
+                        </div>
+                      ))}
+                      <button className="add-identity-button" type="button" onClick={addIdentitySetting}><Plus size={15} /> Ajouter une identité</button>
+                    </div>
+                    <label className="settings-field"><span>Clé API Resend</span><input type="password" value={settingsApiKey} onChange={(event) => setSettingsApiKey(event.target.value)} placeholder={settingsHasApiKey ? "Clé déjà enregistrée — laisser vide pour la conserver" : "re_..."} /><small>Stockée chiffrée avec Windows safeStorage.</small></label>
+                  </section>
+                )}
+
+                {settingsTab === "sending" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title"><div><span className="eyebrow">Envoi</span><h3>Comportement du composeur</h3><p>Contrôlez le délai d’annulation avant le départ réel du message.</p></div></div>
+                    <div className="send-settings">
+                      <label><span>Délai pour annuler l’envoi</span><select value={settingsUndoSendSeconds} onChange={(event) => setSettingsUndoSendSeconds(Number(event.target.value))}><option value={0}>Désactivé — envoyer immédiatement</option><option value={5}>5 secondes</option><option value={10}>10 secondes</option><option value={20}>20 secondes</option><option value={30}>30 secondes</option></select></label>
+                      <p>« Envoyer plus tard » reste disponible indépendamment de ce délai.</p>
+                    </div>
+                  </section>
+                )}
+
+                {settingsTab === "rules" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title"><div><span className="eyebrow">Automatisation</span><h3>Règles de courrier</h3><p>Renseignez une nouvelle règle puis utilisez la disquette en haut.</p></div></div>
+                    <div className="rule-builder">
+                      <input value={ruleName} onChange={(event) => setRuleName(event.target.value)} placeholder="Nom de la règle (optionnel)" />
+                      <div className="rule-builder-grid">
+                        <select value={ruleField} onChange={(event) => setRuleField(event.target.value as MailRuleEntry["field"])}><option value="from">Expéditeur</option><option value="subject">Objet</option><option value="to">Destinataire</option></select>
+                        <select value={ruleOperator} onChange={(event) => setRuleOperator(event.target.value as MailRuleEntry["operator"])}><option value="contains">contient</option><option value="equals">est exactement</option><option value="ends_with">se termine par</option></select>
+                        <input value={ruleValue} onChange={(event) => setRuleValue(event.target.value)} placeholder="Valeur à rechercher" />
+                        <select value={ruleAction} onChange={(event) => setRuleAction(event.target.value as MailRuleEntry["action"])}><option value="archive">Archiver</option><option value="star">Ajouter aux favoris</option><option value="read">Marquer comme lu</option><option value="trash">Déplacer dans la corbeille</option><option value="move_to_folder">Déplacer vers un dossier</option></select>
+                      </div>
+                      {ruleAction === "move_to_folder" && <label className="rule-folder-target"><span>Dossier cible</span><select value={ruleFolderId} onChange={(event) => setRuleFolderId(event.target.value)}><option value="">Choisir un dossier...</option>{customFolders.map((customFolder) => <option key={customFolder.id} value={customFolder.id}>{customFolder.name}</option>)}</select></label>}
+                      <div className="rule-builder-actions"><button type="button" onClick={() => void runRulesNow()} disabled={rules.length === 0}>Appliquer aux messages existants</button></div>
+                    </div>
+                    <div className="settings-subtitle">Règles enregistrées</div>
+                    {rules.length === 0 ? <div className="settings-message">Aucune règle enregistrée.</div> : (
+                      <div className="rules-list">{rules.map((rule) => (
+                        <div className={rule.enabled ? "rule-row" : "rule-row disabled"} key={rule.id}>
+                          <button type="button" className="rule-toggle" onClick={() => void toggleRule(rule)} aria-label={rule.enabled ? "Désactiver la règle" : "Activer la règle"}><span className={rule.enabled ? "switch on" : "switch"}><i /></span></button>
+                          <div className="rule-copy"><strong>{rule.name}</strong><span>{rule.field === "from" ? "Expéditeur" : rule.field === "subject" ? "Objet" : "Destinataire"} {rule.operator === "contains" ? "contient" : rule.operator === "equals" ? "est" : "se termine par"} “{rule.value}” → {rule.action === "archive" ? "Archiver" : rule.action === "star" ? "Favori" : rule.action === "read" ? "Lu" : rule.action === "trash" ? "Corbeille" : "Dossier « " + (customFolders.find((item) => item.id === rule.actionValue)?.name || "introuvable") + " »"}</span></div>
+                          <button type="button" className="rule-delete" onClick={() => void deleteRuleEntry(rule.id)} title="Supprimer la règle"><Trash2 size={15} /></button>
+                        </div>
+                      ))}</div>
+                    )}
+                    <div className="settings-subtitle">Expéditeurs bloqués</div>
+                    <div className="blocked-senders">{blockedSenders.length === 0 ? <div className="settings-message">Aucun expéditeur bloqué.</div> : blockedSenders.map((sender) => <div className="blocked-sender-row" key={sender.email}><span><ShieldBan size={15} /><strong>{sender.email}</strong></span><button type="button" onClick={() => void unblockMailSender(sender.email)}>Débloquer</button></div>)}</div>
+                  </section>
+                )}
+
+                {settingsTab === "templates" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title"><div><span className="eyebrow">Productivité</span><h3>Modèles & réponses rapides</h3><p>Les modèles sont proposés directement dans le composeur.</p></div></div>
+                    <div className="settings-template-layout">
+                      <div className="template-list">
+                        <button type="button" className="template-new" onClick={resetTemplateEditor}><Plus size={14} /> Nouveau modèle</button>
+                        {templates.length === 0 ? <div className="settings-message">Aucun modèle.</div> : templates.map((template) => (
+                          <div className={template.id === templateId ? "template-list-row active" : "template-list-row"} key={template.id}>
+                            <button type="button" onClick={() => selectTemplateForEditing(template)}><strong>{template.name}</strong><small>{template.shortcut || template.subject || "Réponse rapide"}</small></button>
+                            <button type="button" title="Supprimer" onClick={() => void deleteTemplateEntry(template.id)}><Trash2 size={14} /></button>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="template-editor">
+                        <label><span>Nom</span><input value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="Réponse SAV, Relance devis..." /></label>
+                        <label><span>Raccourci</span><input value={templateShortcut} onChange={(event) => setTemplateShortcut(event.target.value)} placeholder="/sav, /devis..." /></label>
+                        <label><span>Objet proposé</span><input value={templateSubject} onChange={(event) => setTemplateSubject(event.target.value)} placeholder="Objet du message" /></label>
+                        <label><span>Texte</span><textarea value={templateText} onChange={(event) => setTemplateText(event.target.value)} placeholder="Version texte de la réponse..." /></label>
+                        <label><span>HTML</span><textarea className="template-html" value={templateHtml} onChange={(event) => setTemplateHtml(event.target.value)} placeholder="<p>Votre réponse mise en forme...</p>" /></label>
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+                {settingsTab === "windows" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title"><div><span className="eyebrow">Système</span><h3>Intégration Windows</h3><p>Les changements sont appliqués uniquement avec la disquette.</p></div></div>
+                    <div className="windows-integration-grid">
+                      <label className="windows-option"><input type="checkbox" checked={settingsStartWithWindows} disabled={!settingsIsPackaged} onChange={(event) => setSettingsStartWithWindows(event.target.checked)} /><span><strong>Démarrer avec Windows</strong><small>Lance MailDesk automatiquement à l’ouverture de session.</small></span></label>
+                      <label className="windows-option"><input type="checkbox" checked={settingsMailtoRegistered} disabled={!settingsIsPackaged} onChange={(event) => setSettingsMailtoRegistered(event.target.checked)} /><span><strong>Ouvrir les liens mailto: avec MailDesk</strong><small>Les liens e-mail de Windows ouvrent directement un nouveau message.</small></span></label>
+                    </div>
+                    {!settingsIsPackaged && <div className="security-note"><strong>Version développement</strong><span>Ces options sont disponibles dans le client Windows installé.</span></div>}
+                    <div className="security-note"><Bell size={16} /><strong>Notifications interactives</strong><span>Ouvrir et Marquer lu sont maintenant disponibles depuis Windows.</span></div>
+                  </section>
+                )}
+
+                {settingsTab === "data" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title"><div><span className="eyebrow">Données locales</span><h3>Sauvegarde & profil</h3><p>Aucun paramètre à enregistrer ici : la disquette reste grisée.</p></div></div>
+                    <div className="security-note"><strong>MailDesk {settingsAppVersion || "développement"}</strong><span>{settingsUserDataPath || databasePath || "Profil MailDesk"}</span><span>La sauvegarde inclut mails, brouillons, boîte d’envoi, contacts, règles, modèles, calendrier, catégories et états locaux.</span></div>
+                    <div className="supabase-actions"><button type="button" className="primary-outline" onClick={() => void exportLocalBackup()}>Exporter une sauvegarde</button><button type="button" onClick={() => void restoreLocalBackup()}>Restaurer une sauvegarde</button><button type="button" onClick={() => void openLocalDataFolder()}>Ouvrir le dossier de données</button></div>
+                  </section>
+                )}
+
+                {settingsTab === "supabase" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title"><div><span className="eyebrow">Cloud optionnel</span><h3>Synchronisation Supabase</h3><p>Mails, contacts, dossiers, règles, modèles et calendrier peuvent être synchronisés.</p></div></div>
+                    <label className="settings-field"><span>URL du projet Supabase</span><input value={settingsSupabaseUrl} onChange={(event) => setSettingsSupabaseUrl(event.target.value)} placeholder="https://xxxx.supabase.co" /></label>
+                    <label className="settings-field"><span>Project Ref</span><input value={settingsSupabaseProjectRef} onChange={(event) => setSettingsSupabaseProjectRef(event.target.value)} placeholder="Détecté automatiquement depuis l’URL si possible" /></label>
+                    <label className="settings-field"><span>Clé de synchronisation</span><input type="password" value={settingsSupabaseKey} onChange={(event) => setSettingsSupabaseKey(event.target.value)} placeholder={settingsHasSupabaseKey ? "Clé déjà enregistrée — laisser vide pour la conserver" : "service_role / sb_secret_…"} /></label>
+                    <label className="settings-field"><span>Token Supabase Management API</span><input type="password" value={settingsSupabaseManagementToken} onChange={(event) => setSettingsSupabaseManagementToken(event.target.value)} placeholder={settingsHasSupabaseManagementToken ? "Token déjà enregistré — laisser vide pour le conserver" : "sbp_… avec permission database_write"} /></label>
+                    <div className="security-note"><strong>Initialisation automatique</strong><span>Le token Management API permet à MailDesk de créer/réparer toutes ses tables puis de tester la Data API.</span></div>
+                    <div className="supabase-actions"><button type="button" className="primary-outline" onClick={() => void initializeSupabaseFromSettings()} disabled={initializingSupabase || !settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey) || !(settingsSupabaseManagementToken || settingsHasSupabaseManagementToken)}>{initializingSupabase ? "Initialisation..." : "Créer / réparer les tables"}</button><button type="button" onClick={() => void syncNowFromSettings()} disabled={!settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey)}>Synchroniser maintenant</button></div>
+                  </section>
+                )}
+
+                {settingsTab === "updates" && (
+                  <section className="settings-tab-panel">
+                    <div className="settings-panel-title"><div><span className="eyebrow">Application</span><h3>Mises à jour</h3><p>Manifest HTTPS + vérification SHA-256 avant installation.</p></div></div>
+                    <label className="windows-option update-toggle"><input type="checkbox" checked={settingsAutoUpdateEnabled} onChange={(event) => setSettingsAutoUpdateEnabled(event.target.checked)} /><span><strong>Rechercher automatiquement les mises à jour</strong><small>Vérification au démarrage puis toutes les 6 heures.</small></span></label>
+                    <label className="settings-field"><span>URL HTTPS du manifest latest.json</span><input value={settingsUpdateManifestUrl} onChange={(event) => setSettingsUpdateManifestUrl(event.target.value)} placeholder="https://votre-domaine.fr/maildesk/latest.json" /></label>
+                    <div className="update-manifest-example"><strong>Format attendu</strong><pre>{"{\n  \"version\": \"0.4.1\",\n  \"url\": \"https://votre-domaine.fr/MailDesk-Setup-0.4.1-x64.exe\",\n  \"sha256\": \"SHA256_DU_SETUP\",\n  \"notes\": \"Corrections et améliorations\"\n}"}</pre></div>
+                    <div className="supabase-actions"><button type="button" className="primary-outline" onClick={() => void checkUpdatesNow()} disabled={checkingUpdates || !settingsUpdateManifestUrl.trim()}>{checkingUpdates ? "Vérification..." : "Vérifier maintenant"}</button>{updateReady && <button type="button" className="update-install-button" onClick={() => void installReadyUpdate()}>Installer la mise à jour</button>}</div>
+                    {updateStatusMessage && <div className="settings-message">{updateStatusMessage}</div>}
+                  </section>
+                )}
+
+                {settingsMessage && <div className="settings-message settings-global-message">{settingsMessage}</div>}
+              </form>
+            </div>
           </section>
         </div>
       )}
