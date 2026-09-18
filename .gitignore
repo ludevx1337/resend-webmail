@@ -19,6 +19,14 @@
 
 # production
 /build
+/dist-electron/
+/dist-electron-release/
+/release-*/
+
+# Electron local logs
+/electron-*.log
+/packaged-maildesk*.log
+/.package-*
 
 # misc
 .DS_Store

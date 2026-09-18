@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Configuration MailDesk</title>
+  <style>
+    :root { color-scheme: light; font-family: "Segoe UI", Arial, sans-serif; color: #182230; background: #eef3f7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(circle at top left, #dfeef9, #eef3f7 46%, #e9eef3); }
+    .card { width: min(620px, calc(100vw - 42px)); border: 1px solid #cad5df; border-radius: 14px; background: #fff; box-shadow: 0 24px 80px rgba(38, 55, 74, .18); overflow: hidden; }
+    header { display: flex; align-items: center; gap: 14px; padding: 22px 24px; border-bottom: 1px solid #e2e8ee; }
+    .mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 10px; background: #0f6cbd; color: white; font-size: 19px; font-weight: 800; }
+    h1 { margin: 0; font-size: 22px; }
+    header p { margin: 4px 0 0; color: #68778a; font-size: 13px; }
+    form { display: grid; gap: 16px; padding: 24px; }
+    label { display: grid; gap: 7px; }
+    label span { font-size: 12px; font-weight: 700; color: #42566c; }
+    input { width: 100%; height: 44px; padding: 0 12px; border: 1px solid #c8d4df; border-radius: 7px; outline: none; font: inherit; }
+    input:focus { border-color: #0f6cbd; box-shadow: 0 0 0 3px rgba(15,108,189,.12); }
+    .note { padding: 12px 13px; border-radius: 8px; background: #eef6fc; color: #3c5671; font-size: 12px; line-height: 1.45; }
+    .note strong { color: #0f5f9f; }
+    .error { min-height: 18px; color: #b42318; font-size: 12px; }
+    footer { display: flex; justify-content: flex-end; gap: 10px; padding-top: 2px; }
+    button { min-height: 40px; padding: 0 18px; border: 1px solid #cfd8e2; border-radius: 7px; background: #fff; cursor: pointer; font-weight: 700; }
+    button.primary { border-color: #0f6cbd; background: #0f6cbd; color: #fff; }
+    button:disabled { opacity: .6; cursor: wait; }
+  </style>
+</head>
+<body>
+  <section class="card">
+    <header>
+      <div class="mark">M</div>
+      <div>
+        <h1>Bienvenue dans MailDesk</h1>
+        <p>Configurez votre compte Resend une seule fois.</p>
+      </div>
+    </header>
+    <form id="setup-form">
+      <label>
+        <span>Adresse d'envoi</span>
+        <input id="from" autocomplete="email" placeholder="Votre nom <mail@votre-domaine.fr>" required />
+      </label>
+      <label>
+        <span>Clé API Resend</span>
+        <input id="apiKey" type="password" autocomplete="off" placeholder="re_..." required />
+      </label>
+      <div class="note">
+        <strong>Stockage sécurisé Windows.</strong><br />
+        La clé API et l'adresse du compte sont chiffrées avec Electron safeStorage, lié au système Windows. MailDesk stocke ensuite les messages dans une base SQLite locale pour conserver un accès hors ligne.
+      </div>
+      <div id="error" class="error"></div>
+      <footer>
+        <button id="save" class="primary" type="submit">Enregistrer et ouvrir MailDesk</button>
+      </footer>
+    </form>
+  </section>
+  <script>
+    const form = document.getElementById('setup-form');
+    const save = document.getElementById('save');
+    const error = document.getElementById('error');
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      error.textContent = '';
+      save.disabled = true;
+      save.textContent = 'Enregistrement...';
+      try {
+        const result = await window.maildeskSetup.save({
+          from: document.getElementById('from').value.trim(),
+          apiKey: document.getElementById('apiKey').value.trim(),
+        });
+        if (!result?.ok) throw new Error(result?.error || 'Configuration impossible');
+      } catch (err) {
+        error.textContent = err?.message || String(err);
+        save.disabled = false;
+        save.textContent = 'Enregistrer et ouvrir MailDesk';
+      }
+    });
+  </script>
+</body>
+</html>

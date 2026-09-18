@@ -1,26 +1,92 @@
 {
   "name": "resend-webmail",
-  "version": "0.1.0",
+  "version": "0.3.1",
+  "description": "MailDesk - client Windows Electron pour Resend",
+  "author": "DevLow",
   "private": true,
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "electron": "electron .",
+    "electron:wait": "wait-on http://127.0.0.1:3000 && electron .",
+    "electron:dev": "concurrently -k -s first \"npm:dev\" \"npm:electron:wait\"",
+    "electron:build": "npm run build && electron-builder --win nsis",
+    "electron:dir": "npm run build && electron-builder --win --dir"
   },
   "dependencies": {
     "next": "16.3.5",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "resend": "^6.28.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@tiptap/extension-placeholder": "^3.31.3",
+    "@tiptap/extension-text-align": "^3.31.3",
+    "@tiptap/pm": "^3.31.3",
+    "@tiptap/react": "^3.31.3",
+    "@tiptap/starter-kit": "^3.31.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^10.0.5",
+    "electron": "^44.4.1",
+    "electron-builder": "^26.15.3",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",
+    "lucide-react": "^1.47.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.devlow.maildesk",
+    "productName": "MailDesk",
+    "artifactName": "MailDesk-Setup-${version}-${arch}.${ext}",
+    "asar": true,
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      ".next/**/*",
+      "public/**/*",
+      "supabase/**/*",
+      "package.json",
+      "next.config.ts"
+    ],
+    "protocols": [
+      {
+        "name": "MailDesk Email",
+        "schemes": [
+          "mailto"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "public/maildesk.ico",
+      "executableName": "MailDesk",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MailDesk",
+      "installerIcon": "public/maildesk.ico",
+      "uninstallerIcon": "public/maildesk.ico",
+      "deleteAppDataOnUninstall": false
+    }
   }
 }
