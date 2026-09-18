@@ -1,6 +1,6 @@
 # MailDesk
 
-MailDesk est un client e-mail Windows construit avec **Electron + Next.js + TypeScript + Resend**. Son interface reprend les grands principes d'Outlook : dossiers, liste des messages, volet de lecture, rédaction riche, menus Windows natifs, raccourcis et fonctionnement en arrière-plan.
+MailDesk est un client e-mail Windows construit avec **Electron + Next.js + TypeScript + Resend**. Son interface reprend les grands principes d'Outlook : dossiers, liste des messages, volet de lecture, rédaction riche, raccourcis clavier, intégration Windows et fonctionnement en arrière-plan.
 
 ## Fonctionnalités
 
@@ -8,7 +8,7 @@ MailDesk est un client e-mail Windows construit avec **Electron + Next.js + Type
 - assistant de première configuration Electron ;
 - adresse du compte + clé Resend stockées chiffrées avec `Electron safeStorage` ;
 - démarrages suivants directs, sans redemander les identifiants ;
-- modification ultérieure de la clé Resend via **Fichier > Paramètres** ;
+- modification ultérieure de la clé Resend via **Paramètres > Compte** ;
 - stockage des messages dans une base locale SQLite `maildesk.db` ;
 - consultation du cache local lorsque Resend ou Supabase est indisponible ;
 - hydratation en arrière-plan du contenu des messages reçus pour l'accès hors ligne ;
@@ -46,7 +46,7 @@ MailDesk est un client e-mail Windows construit avec **Electron + Next.js + Type
 - notifications Windows avec actions **Ouvrir** et **Marquer lu** ;
 - intégration Windows : démarrage à l'ouverture de session, gestionnaire `mailto:`, instance unique et compteur non lu dans l'infobulle du tray ;
 - auto-update facultatif par manifest HTTPS, téléchargement du Setup et validation SHA-256 avant installation ;
-- sauvegarde/restauration SQLite complète depuis Paramètres ou le menu Fichier, avec copie de sécurité automatique avant restauration ;
+- sauvegarde/restauration SQLite complète depuis **Paramètres > Données**, avec copie de sécurité automatique avant restauration ;
 - accès direct au dossier de données local et affichage de la version installée ;
 - serveur Next.js embarqué dans la version packagée.
 
@@ -77,7 +77,7 @@ Après récupération de la liste Resend, MailDesk met en cache les résumés pu
 
 ### Sauvegarde locale
 
-Depuis **Fichier > Exporter une sauvegarde** ou **Paramètres > Données locales & sauvegarde**, MailDesk crée un snapshot SQLite cohérent via `VACUUM INTO`. Il contient l'ensemble des données locales : messages, conversations, états, brouillons, boîte d'envoi, contacts, règles, catégories, snooze et expéditeurs bloqués.
+Depuis **Paramètres > Données**, MailDesk crée un snapshot SQLite cohérent via `VACUUM INTO`. Il contient l'ensemble des données locales : messages, conversations, états, brouillons, boîte d'envoi, contacts, règles, catégories, snooze et expéditeurs bloqués.
 
 Les secrets Resend/Supabase ne sont pas inclus : ils restent dans le fichier de paramètres chiffré par `safeStorage`.
 
@@ -180,7 +180,7 @@ Dans le volet de lecture, **Imprimer**, **PDF** et **EML** permettent de sortir 
 - l'export EML concerne le message sélectionné et reproduit les headers `Message-ID`, `In-Reply-To` et `References` ;
 - les pièces jointes reçues sont téléchargées via Resend au moment de l'export et ajoutées comme parties MIME encodées en base64.
 
-Le menu Windows **Message > Imprimer** est également disponible avec `Ctrl+P`.
+L'impression est également accessible directement avec `Ctrl+P`.
 
 ### Boîte d'envoi hors ligne
 
@@ -383,6 +383,16 @@ supabase/
 ```
 
 Le renderer utilise `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true` et n'accède jamais directement aux clés stockées.
+
+## Licence
+
+MailDesk est distribué sous licence **MIT**.
+
+Vous pouvez utiliser, copier, modifier, fusionner, publier, distribuer, sous-licencier et vendre des copies du logiciel, à condition de conserver la notice de copyright et le texte de licence.
+
+Copyright © 2026 **DevLow**.
+
+Le texte complet est disponible dans le fichier [LICENSE](LICENSE).
 
 ## Remarque sur la suppression
 
