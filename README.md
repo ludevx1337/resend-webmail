@@ -352,7 +352,7 @@ Sorties :
 
 ```text
 dist-electron\win-unpacked\MailDesk.exe
-release-0.4.0\MailDesk-Setup-0.4.0-x64.exe
+release-0.4.1\MailDesk-Setup-0.4.1-x64.exe
 ```
 
 ## Architecture

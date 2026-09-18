@@ -2,7 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, shell, Menu, Notification, Tray } =
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
-const { buildApplicationMenu, popupMailContextMenu } = require("./menu.cjs");
+const { popupMailContextMenu } = require("./menu.cjs");
 const {
   applyStoredSettings,
   effectiveSettings,
@@ -1168,7 +1168,7 @@ app.whenReady().then(async () => {
   applyStoredSettings();
   getSnapshot();
   resetSendingOutbox();
-  buildApplicationMenu(() => mainWindow);
+  Menu.setApplicationMenu(null);
   applicationUrl = app.isPackaged ? await startProductionServer() : "http://127.0.0.1:3000";
   createWindow(applicationUrl);
   createTray();

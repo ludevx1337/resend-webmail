@@ -646,6 +646,28 @@ export default function Home() {
     ? settingsSnapshots[settingsBaselineKey] !== settingsBaselines[settingsBaselineKey]
     : false;
 
+  function settingsTabIsDirty(tab: SettingsTab) {
+    if (tab === "data") return false;
+    return settingsSnapshots[tab] !== settingsBaselines[tab];
+  }
+
+  function settingsPanelSaveButton(tab: SettingsTab) {
+    const dirty = settingsTabIsDirty(tab);
+    const busy = savingSettings || initializingSupabase;
+    return (
+      <button
+        type="button"
+        className={dirty ? "settings-save-icon dirty" : "settings-save-icon"}
+        disabled={!dirty || busy}
+        onClick={() => void saveActiveSettingsTab()}
+        title={dirty ? "Enregistrer les modifications de cet onglet" : "Aucune modification"}
+      >
+        <Save size={17} />
+        <span>{savingSettings && settingsTab === tab ? "Enregistrement..." : dirty ? "Enregistrer" : "Enregistré"}</span>
+      </button>
+    );
+  }
+
   const conversationIndex = useMemo(
     () => buildConversationIndex(allMail.filter((mail) => !deletedIds.includes(mail.id))),
     [allMail, deletedIds],
@@ -880,9 +902,79 @@ export default function Home() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Delete" || !selected || composeOpen || settingsOpen) return;
       const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable)) return;
+      const editing = target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || (target instanceof HTMLElement && target.isContentEditable);
+      const command = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+
+      if (command && key === "n") {
+        event.preventDefault();
+        startCompose();
+        return;
+      }
+      if (command && key === "e") {
+        event.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+      if (command && key === "1") {
+        event.preventDefault();
+        setFolder("inbox");
+        return;
+      }
+      if (command && key === "2") {
+        event.preventDefault();
+        setFolder("sent");
+        return;
+      }
+      if (command && key === "3") {
+        event.preventDefault();
+        setFolder("archive");
+        return;
+      }
+      if (command && key === "4") {
+        event.preventDefault();
+        setFolder("trash");
+        return;
+      }
+      if (command && key === "5") {
+        event.preventDefault();
+        void openContacts();
+        return;
+      }
+      if (event.key === "F5") {
+        event.preventDefault();
+        void refresh();
+        return;
+      }
+
+      if (composeOpen || settingsOpen || contactsOpen || calendarOpen || !selected) return;
+
+      if (command && key === "r") {
+        event.preventDefault();
+        void startReplyFor(selected, event.shiftKey);
+        return;
+      }
+      if (command && key === "f") {
+        event.preventDefault();
+        void startForwardFor(selected);
+        return;
+      }
+      if (command && key === "p") {
+        event.preventDefault();
+        void printCurrentConversation();
+        return;
+      }
+      if (command && key === "u") {
+        event.preventDefault();
+        markRead(selected.id, false);
+        return;
+      }
+
+      if (event.key !== "Delete" || editing) return;
       event.preventDefault();
       if (folder === "trash") {
         setDeletedIds((ids) => addId(ids, selected.id));
@@ -900,7 +992,9 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [composeOpen, folder, selected, settingsOpen]);
+    // The handlers intentionally follow the current UI state and are re-bound when it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calendarOpen, composeOpen, contactsOpen, folder, selected, settingsOpen]);
 
   async function cacheMissingBodies(ids: string[]) {
     if (!window.maildesk || !ids.length) return;
@@ -3521,16 +3615,6 @@ export default function Home() {
             <div className="settings-header settings-tabbed-header">
               <div><span className="eyebrow">Configuration</span><h2>Paramètres MailDesk</h2></div>
               <div className="settings-header-actions">
-                <button
-                  type="button"
-                  className={activeSettingsDirty ? "settings-save-icon dirty" : "settings-save-icon"}
-                  disabled={!activeSettingsDirty || savingSettings || initializingSupabase}
-                  onClick={() => void saveActiveSettingsTab()}
-                  title={activeSettingsDirty ? "Enregistrer les modifications de cet onglet" : "Aucune modification"}
-                >
-                  <Save size={17} />
-                  <span>{savingSettings ? "Enregistrement..." : activeSettingsDirty ? "Enregistrer" : "Enregistré"}</span>
-                </button>
                 <button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} title="Fermer"><X size={18} /></button>
               </div>
             </div>
@@ -3550,7 +3634,7 @@ export default function Home() {
               <form className="settings-tab-content" onSubmit={(event) => { event.preventDefault(); void saveActiveSettingsTab(); }}>
                 {settingsTab === "account" && (
                   <section className="settings-tab-panel">
-                    <div className="settings-panel-title"><div><span className="eyebrow">Compte</span><h3>Identités d’envoi</h3><p>Adresses Resend et signatures utilisées par le composeur.</p></div></div>
+                    <div className="settings-panel-title"><div><span className="eyebrow">Compte</span><h3>Identités d’envoi</h3><p>Adresses Resend et signatures utilisées par le composeur.</p></div>{settingsPanelSaveButton("account")}</div>
                     <div className="identity-settings-list">
                       {materializedSettingsIdentities().map((identity) => (
                         <div className={identity.isDefault ? "identity-settings-card default" : "identity-settings-card"} key={identity.id}>
@@ -3576,7 +3660,7 @@ export default function Home() {
 
                 {settingsTab === "sending" && (
                   <section className="settings-tab-panel">
-                    <div className="settings-panel-title"><div><span className="eyebrow">Envoi</span><h3>Comportement du composeur</h3><p>Contrôlez le délai d’annulation avant le départ réel du message.</p></div></div>
+                    <div className="settings-panel-title"><div><span className="eyebrow">Envoi</span><h3>Comportement du composeur</h3><p>Contrôlez le délai d’annulation avant le départ réel du message.</p></div>{settingsPanelSaveButton("sending")}</div>
                     <div className="send-settings">
                       <label><span>Délai pour annuler l’envoi</span><select value={settingsUndoSendSeconds} onChange={(event) => setSettingsUndoSendSeconds(Number(event.target.value))}><option value={0}>Désactivé — envoyer immédiatement</option><option value={5}>5 secondes</option><option value={10}>10 secondes</option><option value={20}>20 secondes</option><option value={30}>30 secondes</option></select></label>
                       <p>« Envoyer plus tard » reste disponible indépendamment de ce délai.</p>
@@ -3586,7 +3670,7 @@ export default function Home() {
 
                 {settingsTab === "rules" && (
                   <section className="settings-tab-panel">
-                    <div className="settings-panel-title"><div><span className="eyebrow">Automatisation</span><h3>Règles de courrier</h3><p>Renseignez une nouvelle règle puis utilisez la disquette en haut.</p></div></div>
+                    <div className="settings-panel-title"><div><span className="eyebrow">Automatisation</span><h3>Règles de courrier</h3><p>Renseignez une nouvelle règle puis utilisez la disquette de cet onglet.</p></div>{settingsPanelSaveButton("rules")}</div>
                     <div className="rule-builder">
                       <input value={ruleName} onChange={(event) => setRuleName(event.target.value)} placeholder="Nom de la règle (optionnel)" />
                       <div className="rule-builder-grid">
@@ -3615,7 +3699,7 @@ export default function Home() {
 
                 {settingsTab === "templates" && (
                   <section className="settings-tab-panel">
-                    <div className="settings-panel-title"><div><span className="eyebrow">Productivité</span><h3>Modèles & réponses rapides</h3><p>Les modèles sont proposés directement dans le composeur.</p></div></div>
+                    <div className="settings-panel-title"><div><span className="eyebrow">Productivité</span><h3>Modèles & réponses rapides</h3><p>Les modèles sont proposés directement dans le composeur.</p></div>{settingsPanelSaveButton("templates")}</div>
                     <div className="settings-template-layout">
                       <div className="template-list">
                         <button type="button" className="template-new" onClick={resetTemplateEditor}><Plus size={14} /> Nouveau modèle</button>
@@ -3639,7 +3723,7 @@ export default function Home() {
 
                 {settingsTab === "windows" && (
                   <section className="settings-tab-panel">
-                    <div className="settings-panel-title"><div><span className="eyebrow">Système</span><h3>Intégration Windows</h3><p>Les changements sont appliqués uniquement avec la disquette.</p></div></div>
+                    <div className="settings-panel-title"><div><span className="eyebrow">Système</span><h3>Intégration Windows</h3><p>Les changements sont appliqués uniquement avec la disquette.</p></div>{settingsPanelSaveButton("windows")}</div>
                     <div className="windows-integration-grid">
                       <label className="windows-option"><input type="checkbox" checked={settingsStartWithWindows} disabled={!settingsIsPackaged} onChange={(event) => setSettingsStartWithWindows(event.target.checked)} /><span><strong>Démarrer avec Windows</strong><small>Lance MailDesk automatiquement à l’ouverture de session.</small></span></label>
                       <label className="windows-option"><input type="checkbox" checked={settingsMailtoRegistered} disabled={!settingsIsPackaged} onChange={(event) => setSettingsMailtoRegistered(event.target.checked)} /><span><strong>Ouvrir les liens mailto: avec MailDesk</strong><small>Les liens e-mail de Windows ouvrent directement un nouveau message.</small></span></label>
@@ -3651,7 +3735,7 @@ export default function Home() {
 
                 {settingsTab === "data" && (
                   <section className="settings-tab-panel">
-                    <div className="settings-panel-title"><div><span className="eyebrow">Données locales</span><h3>Sauvegarde & profil</h3><p>Aucun paramètre à enregistrer ici : la disquette reste grisée.</p></div></div>
+                    <div className="settings-panel-title"><div><span className="eyebrow">Données locales</span><h3>Sauvegarde & profil</h3><p>Aucun paramètre à enregistrer ici : la disquette reste grisée.</p></div>{settingsPanelSaveButton("data")}</div>
                     <div className="security-note"><strong>MailDesk {settingsAppVersion || "développement"}</strong><span>{settingsUserDataPath || databasePath || "Profil MailDesk"}</span><span>La sauvegarde inclut mails, brouillons, boîte d’envoi, contacts, règles, modèles, calendrier, catégories et états locaux.</span></div>
                     <div className="supabase-actions"><button type="button" className="primary-outline" onClick={() => void exportLocalBackup()}>Exporter une sauvegarde</button><button type="button" onClick={() => void restoreLocalBackup()}>Restaurer une sauvegarde</button><button type="button" onClick={() => void openLocalDataFolder()}>Ouvrir le dossier de données</button></div>
                   </section>
@@ -3659,7 +3743,7 @@ export default function Home() {
 
                 {settingsTab === "supabase" && (
                   <section className="settings-tab-panel">
-                    <div className="settings-panel-title"><div><span className="eyebrow">Cloud optionnel</span><h3>Synchronisation Supabase</h3><p>Mails, contacts, dossiers, règles, modèles et calendrier peuvent être synchronisés.</p></div></div>
+                    <div className="settings-panel-title"><div><span className="eyebrow">Cloud optionnel</span><h3>Synchronisation Supabase</h3><p>Mails, contacts, dossiers, règles, modèles et calendrier peuvent être synchronisés.</p></div>{settingsPanelSaveButton("supabase")}</div>
                     <label className="settings-field"><span>URL du projet Supabase</span><input value={settingsSupabaseUrl} onChange={(event) => setSettingsSupabaseUrl(event.target.value)} placeholder="https://xxxx.supabase.co" /></label>
                     <label className="settings-field"><span>Project Ref</span><input value={settingsSupabaseProjectRef} onChange={(event) => setSettingsSupabaseProjectRef(event.target.value)} placeholder="Détecté automatiquement depuis l’URL si possible" /></label>
                     <label className="settings-field"><span>Clé de synchronisation</span><input type="password" value={settingsSupabaseKey} onChange={(event) => setSettingsSupabaseKey(event.target.value)} placeholder={settingsHasSupabaseKey ? "Clé déjà enregistrée — laisser vide pour la conserver" : "service_role / sb_secret_…"} /></label>
@@ -3671,7 +3755,7 @@ export default function Home() {
 
                 {settingsTab === "updates" && (
                   <section className="settings-tab-panel">
-                    <div className="settings-panel-title"><div><span className="eyebrow">Application</span><h3>Mises à jour</h3><p>Manifest HTTPS + vérification SHA-256 avant installation.</p></div></div>
+                    <div className="settings-panel-title"><div><span className="eyebrow">Application</span><h3>Mises à jour</h3><p>Manifest HTTPS + vérification SHA-256 avant installation.</p></div>{settingsPanelSaveButton("updates")}</div>
                     <label className="windows-option update-toggle"><input type="checkbox" checked={settingsAutoUpdateEnabled} onChange={(event) => setSettingsAutoUpdateEnabled(event.target.checked)} /><span><strong>Rechercher automatiquement les mises à jour</strong><small>Vérification au démarrage puis toutes les 6 heures.</small></span></label>
                     <label className="settings-field"><span>URL HTTPS du manifest latest.json</span><input value={settingsUpdateManifestUrl} onChange={(event) => setSettingsUpdateManifestUrl(event.target.value)} placeholder="https://votre-domaine.fr/maildesk/latest.json" /></label>
                     <div className="update-manifest-example"><strong>Format attendu</strong><pre>{"{\n  \"version\": \"0.4.1\",\n  \"url\": \"https://votre-domaine.fr/MailDesk-Setup-0.4.1-x64.exe\",\n  \"sha256\": \"SHA256_DU_SETUP\",\n  \"notes\": \"Corrections et améliorations\"\n}"}</pre></div>
