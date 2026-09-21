@@ -208,6 +208,12 @@ button { color: inherit; }
 .sender-meta strong { font-size: 13px; }
 .sender-meta span, .sender-meta small, .sender-card time { color: var(--muted); font-size: 11px; }
 .sender-card time { white-space: nowrap; }
+.sender-card-side { display: grid; justify-items: end; gap: 9px; }
+.sender-quick-actions { display: flex; align-items: center; gap: 3px; }
+.sender-quick-actions button { width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: #607184; cursor: pointer; }
+.sender-quick-actions button:hover { background: var(--brand-soft); color: var(--brand); }
+.sender-quick-actions button.active.flag { color: #b93838; background: #fff1f1; }
+.sender-quick-actions button.active.pin { color: var(--brand); background: var(--brand-soft); }
 .message-body { margin-top: 26px; border-top: 1px solid #f1f3f5; padding-top: 18px; min-height: 320px; }
 .secure-mail-frame { width: 100%; }
 .secure-mail-frame iframe { width: 100%; min-height: 430px; border: 0; background: white; }

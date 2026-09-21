@@ -60,6 +60,14 @@ type GroupMode = "outlook" | "day" | "week" | "month" | "none";
 type ReadingTab = "mail" | "compose";
 type ComposeKind = "new" | "reply" | "replyAll" | "forward" | "draft";
 
+type ComposeTabEntry = {
+  id: string;
+  draftId: string;
+  kind: ComposeKind;
+  compose: ComposeState;
+  showCc: boolean;
+};
+
 type MailItem = {
   id: string;
   created_at?: string;
@@ -623,6 +631,8 @@ export default function Home() {
   const [deletedIds, setDeletedIds] = useState<string[]>([]);
   const [composeOpen, setComposeOpen] = useState(false);
   const [activeReadingTab, setActiveReadingTab] = useState<ReadingTab>("mail");
+  const [composeTabs, setComposeTabs] = useState<ComposeTabEntry[]>([]);
+  const [activeComposeTabId, setActiveComposeTabId] = useState("");
   const [composeKind, setComposeKind] = useState<ComposeKind>("new");
   const [compose, setCompose] = useState<ComposeState>(EMPTY_COMPOSE);
   const [sending, setSending] = useState(false);
@@ -970,7 +980,7 @@ export default function Home() {
     if (!window.maildesk) {
       localStorage.setItem(STORAGE.draft, JSON.stringify({ ...draft, attachments: [] }));
     }
-  }, [compose, composeOpen, currentDraftId, identities, signature]);
+  }, [activeComposeTabId, compose, composeKind, composeOpen, currentDraftId, identities, showCc, signature]);
 
   useEffect(() => {
     if (!window.maildesk) return;
@@ -1581,9 +1591,153 @@ export default function Home() {
     });
   }
 
-  function openSavedDraft(draft: DraftEntry) {
-    setCurrentDraftId(draft.id);
-    setCompose({
+  function composeTabLabel(kind: ComposeKind, state: ComposeState) {
+    const base = kind === "reply"
+      ? "Réponse"
+      : kind === "replyAll"
+        ? "Réponse à tous"
+        : kind === "forward"
+          ? "Transfert"
+          : kind === "draft"
+            ? "Brouillon"
+            : "Nouveau message";
+    return state.subject.trim() ? `${base} · ${state.subject.trim()}` : base;
+  }
+
+  function activeComposeSnapshot(): ComposeTabEntry | null {
+    if (!composeOpen || !activeComposeTabId) return null;
+    return {
+      id: activeComposeTabId,
+      draftId: currentDraftId || globalThis.crypto.randomUUID(),
+      kind: composeKind,
+      compose: { ...compose, attachments: [...compose.attachments] },
+      showCc,
+    };
+  }
+
+  function loadComposeTab(tab: ComposeTabEntry) {
+    setActiveComposeTabId(tab.id);
+    setCurrentDraftId(tab.draftId);
+    setComposeKind(tab.kind);
+    setCompose({ ...tab.compose, attachments: [...tab.compose.attachments] });
+    setShowCc(tab.showCc);
+    setComposeOpen(true);
+    setActiveReadingTab("compose");
+    setSidebarOpen(false);
+  }
+
+  async function persistComposeTab(tab: ComposeTabEntry, quiet = true) {
+    const composeSignature = signatureForSender(identities, tab.compose.from, signature);
+    if (!hasComposeContent(tab.compose, composeSignature)) return;
+
+    const draft = {
+      id: tab.draftId,
+      from: tab.compose.from,
+      to: tab.compose.to,
+      cc: tab.compose.cc,
+      bcc: tab.compose.bcc,
+      subject: tab.compose.subject,
+      text: tab.compose.text,
+      html: tab.compose.html,
+      replyToMessageId: tab.compose.replyToMessageId,
+      replyReferences: tab.compose.replyReferences,
+      attachments: tab.compose.attachments,
+    };
+
+    if (window.maildesk) {
+      const saved = await window.maildesk.saveDraft(draft);
+      setDrafts((items) => [saved as DraftEntry, ...items.filter((item) => item.id !== saved.id)]);
+    } else {
+      localStorage.setItem(STORAGE.draft, JSON.stringify({ ...draft, attachments: [] }));
+    }
+    if (!quiet) setError("Brouillon enregistré.");
+  }
+
+  async function snapshotAndPersistActiveCompose() {
+    const snapshot = activeComposeSnapshot();
+    if (!snapshot) return;
+    setComposeTabs((items) => items.map((item) => item.id === snapshot.id ? snapshot : item));
+    await persistComposeTab(snapshot);
+  }
+
+  async function openComposeWorkspaceTab(
+    kind: ComposeKind,
+    nextCompose: ComposeState,
+    nextShowCc = false,
+    draftId = globalThis.crypto.randomUUID(),
+  ) {
+    const current = activeComposeSnapshot();
+    if (current) {
+      setComposeTabs((items) => items.map((item) => item.id === current.id ? current : item));
+      await persistComposeTab(current);
+    }
+
+    const tab: ComposeTabEntry = {
+      id: globalThis.crypto.randomUUID(),
+      draftId,
+      kind,
+      compose: { ...nextCompose, attachments: [...nextCompose.attachments] },
+      showCc: nextShowCc,
+    };
+    setComposeTabs((items) => [...items, tab]);
+    loadComposeTab(tab);
+  }
+
+  async function switchComposeTab(tabId: string) {
+    if (tabId === activeComposeTabId) {
+      setActiveReadingTab("compose");
+      return;
+    }
+    await snapshotAndPersistActiveCompose();
+    const target = composeTabs.find((item) => item.id === tabId);
+    if (target) loadComposeTab(target);
+  }
+
+  async function closeComposeTab(tabId: string) {
+    const current = activeComposeSnapshot();
+    const stored = composeTabs.find((item) => item.id === tabId);
+    const tab = current?.id === tabId ? current : stored;
+    if (tab) await persistComposeTab(tab);
+
+    const remaining = composeTabs.filter((item) => item.id !== tabId);
+    setComposeTabs(remaining);
+
+    if (tabId !== activeComposeTabId) return;
+    const fallback = remaining[remaining.length - 1];
+    if (fallback) {
+      loadComposeTab(fallback);
+      return;
+    }
+
+    setActiveComposeTabId("");
+    setCurrentDraftId("");
+    setCompose({ ...EMPTY_COMPOSE, attachments: [] });
+    setComposeOpen(false);
+    setActiveReadingTab("mail");
+  }
+
+  function finishActiveComposeTab() {
+    const remaining = composeTabs.filter((item) => item.id !== activeComposeTabId);
+    setComposeTabs(remaining);
+    const fallback = remaining[remaining.length - 1];
+    if (fallback) {
+      loadComposeTab(fallback);
+      return;
+    }
+    setActiveComposeTabId("");
+    setCurrentDraftId("");
+    setCompose({ ...EMPTY_COMPOSE, attachments: [] });
+    setComposeOpen(false);
+    setActiveReadingTab("mail");
+  }
+
+  async function openSavedDraft(draft: DraftEntry) {
+    const existing = composeTabs.find((item) => item.draftId === draft.id);
+    if (existing) {
+      await switchComposeTab(existing.id);
+      return;
+    }
+    const nextCompose = {
       ...EMPTY_COMPOSE,
       from: draft.from,
       to: draft.to,
@@ -1595,114 +1749,61 @@ export default function Home() {
       replyToMessageId: draft.replyToMessageId,
       replyReferences: draft.replyReferences,
       attachments: draft.attachments ?? [],
-    });
-    setShowCc(Boolean(draft.cc || draft.bcc));
-    setComposeKind("draft");
-    setComposeOpen(true);
-    setActiveReadingTab("compose");
-    setSidebarOpen(false);
+    };
+    await openComposeWorkspaceTab("draft", nextCompose, Boolean(draft.cc || draft.bcc), draft.id);
   }
 
   async function deleteDraftEntry(id: string) {
     if (window.maildesk) await window.maildesk.deleteDraft(id);
     setDrafts((items) => items.filter((item) => item.id !== id));
-    if (currentDraftId === id) {
-      setCurrentDraftId("");
-      setCompose({ ...EMPTY_COMPOSE, attachments: [] });
-      setComposeOpen(false);
-      setActiveReadingTab("mail");
-    }
-  }
+    const tab = composeTabs.find((item) => item.draftId === id);
+    if (!tab) return;
 
-  async function preserveComposeBeforeSwitch() {
-    if (!composeOpen) return;
-    const composeSignature = signatureForSender(identities, compose.from, signature);
-    if (hasComposeContent(compose, composeSignature)) await saveCurrentDraft();
+    const remaining = composeTabs.filter((item) => item.id !== tab.id);
+    setComposeTabs(remaining);
+    if (tab.id !== activeComposeTabId) return;
+
+    const fallback = remaining[remaining.length - 1];
+    if (fallback) {
+      loadComposeTab(fallback);
+      return;
+    }
+    setActiveComposeTabId("");
+    setCurrentDraftId("");
+    setCompose({ ...EMPTY_COMPOSE, attachments: [] });
+    setComposeOpen(false);
+    setActiveReadingTab("mail");
   }
 
   async function startCompose() {
-    await preserveComposeBeforeSwitch();
     const defaultIdentity = defaultIdentityOf(identities, settingsFrom, signature);
     const composeSignature = defaultIdentity?.signature || signature;
-    setCurrentDraftId(globalThis.crypto.randomUUID());
-    setCompose({
+    const nextCompose: ComposeState = {
       ...EMPTY_COMPOSE,
       from: defaultIdentity?.from || settingsFrom,
       text: composeSignature ? `\n\n${composeSignature}` : "",
       html: signatureToHtml(composeSignature),
       attachments: [],
-    });
-    setShowCc(false);
-    setComposeKind("new");
-    setComposeOpen(true);
-    setActiveReadingTab("compose");
-    setSidebarOpen(false);
+    };
+    await openComposeWorkspaceTab("new", nextCompose);
   }
 
   function closeCompose() {
-    const composeSignature = signatureForSender(identities, compose.from, signature);
-    if (hasComposeContent(compose, composeSignature)) {
-      const draft = {
-        id: currentDraftId,
-        from: compose.from,
-        to: compose.to,
-        cc: compose.cc,
-        bcc: compose.bcc,
-        subject: compose.subject,
-        text: compose.text,
-        html: compose.html,
-        replyToMessageId: compose.replyToMessageId,
-        replyReferences: compose.replyReferences,
-        attachments: compose.attachments,
-      };
-      if (window.maildesk && currentDraftId) {
-        void window.maildesk.saveDraft(draft).then((saved) => {
-          setDrafts((items) => [saved as DraftEntry, ...items.filter((item) => item.id !== saved.id)]);
-        });
-      } else {
-        localStorage.setItem(STORAGE.draft, JSON.stringify({ ...draft, attachments: [] }));
-      }
-    } else if (window.maildesk && currentDraftId) {
-      void window.maildesk.deleteDraft(currentDraftId).then(() => {
-        setDrafts((items) => items.filter((item) => item.id !== currentDraftId));
-      });
-    }
-    setComposeOpen(false);
-    setActiveReadingTab("mail");
+    if (activeComposeTabId) void closeComposeTab(activeComposeTabId);
   }
 
-  async function saveCurrentDraft() {
-    const composeSignature = signatureForSender(identities, compose.from, signature);
-    if (!hasComposeContent(compose, composeSignature)) {
-      setError("Ajoutez un destinataire, un objet ou du contenu avant de créer le brouillon.");
+  async function saveCurrentDraft(options: { quiet?: boolean } = {}) {
+    const snapshot = activeComposeSnapshot();
+    if (!snapshot) return;
+
+    const composeSignature = signatureForSender(identities, snapshot.compose.from, signature);
+    if (!hasComposeContent(snapshot.compose, composeSignature)) {
+      if (!options.quiet) setError("Ajoutez un destinataire, un objet ou du contenu avant de créer le brouillon.");
       return;
     }
 
-    const draftId = currentDraftId || globalThis.crypto.randomUUID();
-    const draft = {
-      id: draftId,
-      from: compose.from,
-      to: compose.to,
-      cc: compose.cc,
-      bcc: compose.bcc,
-      subject: compose.subject,
-      text: compose.text,
-      html: compose.html,
-      replyToMessageId: compose.replyToMessageId,
-      replyReferences: compose.replyReferences,
-      attachments: compose.attachments,
-    };
-
-    if (window.maildesk) {
-      const saved = await window.maildesk.saveDraft(draft);
-      setCurrentDraftId(saved.id);
-      setDrafts((items) => [saved as DraftEntry, ...items.filter((item) => item.id !== saved.id)]);
-      setError("Brouillon enregistré.");
-    } else {
-      localStorage.setItem(STORAGE.draft, JSON.stringify({ ...draft, attachments: [] }));
-      setCurrentDraftId(draftId);
-      setError("Brouillon enregistré localement.");
-    }
+    setComposeTabs((items) => items.map((item) => item.id === snapshot.id ? snapshot : item));
+    await persistComposeTab(snapshot, Boolean(options.quiet));
   }
 
   async function loadConversationForExport() {
@@ -1765,7 +1866,6 @@ export default function Home() {
   }
 
   async function startReplyFor(mail: MailItem, replyAll = false) {
-    await preserveComposeBeforeSwitch();
     const message = await getMailDetail(mail, false);
     if (!message) return;
     const fromSentFolder = sourceFolder(mail) === "sent";
@@ -1781,8 +1881,7 @@ export default function Home() {
     const originalText = message.text?.trim() || "[Message HTML original]";
     const replyLead = `\n\nLe ${message.created_at ? new Date(message.created_at).toLocaleString("fr-FR") : ""}, ${message.from || ""} a écrit :\n${originalText}`;
     const originalHtml = message.html || `<pre>${escapeHtml(originalText)}</pre>`;
-    setCurrentDraftId(globalThis.crypto.randomUUID());
-    setCompose({
+    const nextCompose: ComposeState = {
       ...EMPTY_COMPOSE,
       from: replyIdentity?.from || settingsFrom,
       to: replyAddress,
@@ -1793,15 +1892,11 @@ export default function Home() {
       replyToMessageId: message.message_id,
       replyReferences: replyReferencesFor(message),
       attachments: [],
-    });
-    setShowCc(replyAll && Boolean(cc));
-    setComposeKind(replyAll ? "replyAll" : "reply");
-    setComposeOpen(true);
-    setActiveReadingTab("compose");
+    };
+    await openComposeWorkspaceTab(replyAll ? "replyAll" : "reply", nextCompose, replyAll && Boolean(cc));
   }
 
   async function startForwardFor(mail: MailItem) {
-    await preserveComposeBeforeSwitch();
     const message = await getMailDetail(mail, false);
     if (!message) return;
     const original = message.text?.trim() || "[Message HTML original]";
@@ -1825,19 +1920,15 @@ export default function Home() {
     const originalHtml = message.html || `<pre>${escapeHtml(original)}</pre>`;
     const defaultIdentity = defaultIdentityOf(identities, settingsFrom, signature);
     const forwardSignature = defaultIdentity?.signature || signature;
-    setCurrentDraftId(globalThis.crypto.randomUUID());
-    setCompose({
+    const nextCompose: ComposeState = {
       ...EMPTY_COMPOSE,
       from: defaultIdentity?.from || settingsFrom,
       subject: normalizeSubject("TR", message.subject),
       text: `${forwardSignature ? `\n\n${forwardSignature}` : ""}${forwardedText}`,
       html: `${signatureToHtml(forwardSignature)}<br><hr><div>${forwardMeta}</div><br>${originalHtml}`,
       attachments: [],
-    });
-    setShowCc(false);
-    setComposeKind("forward");
-    setComposeOpen(true);
-    setActiveReadingTab("compose");
+    };
+    await openComposeWorkspaceTab("forward", nextCompose);
   }
 
   async function handleNativeAction(payload: { action: string; id?: string; folder?: string; to?: string; cc?: string; bcc?: string; subject?: string; text?: string }) {
@@ -1846,8 +1937,7 @@ export default function Home() {
       const defaultIdentity = defaultIdentityOf(identities, settingsFrom, signature);
       const composeSignature = defaultIdentity?.signature || signature;
       const mailtoText = payload.text || "";
-      setCurrentDraftId(globalThis.crypto.randomUUID());
-      setCompose({
+      const nextCompose: ComposeState = {
         ...EMPTY_COMPOSE,
         from: defaultIdentity?.from || settingsFrom,
         to: payload.to || "",
@@ -1857,12 +1947,8 @@ export default function Home() {
         text: `${mailtoText}${composeSignature ? `\n\n${composeSignature}` : ""}`,
         html: `${mailtoText ? `<p>${escapeHtml(mailtoText).replace(/\n/g, "<br>")}</p>` : ""}${signatureToHtml(composeSignature)}`,
         attachments: [],
-      });
-      setShowCc(Boolean(payload.cc || payload.bcc));
-      setComposeKind("new");
-      setComposeOpen(true);
-      setActiveReadingTab("compose");
-      setSidebarOpen(false);
+      };
+      await openComposeWorkspaceTab("new", nextCompose, Boolean(payload.cc || payload.bcc));
       return;
     }
     if (payload.action === "contacts") return void openContacts();
@@ -2114,8 +2200,7 @@ export default function Home() {
     if (!window.maildesk) return;
     await window.maildesk.deleteOutbox(item.id);
     setOutbox(await window.maildesk.getOutbox() as OutboxEntry[]);
-    setCurrentDraftId(globalThis.crypto.randomUUID());
-    setCompose({
+    const nextCompose: ComposeState = {
       ...EMPTY_COMPOSE,
       from: item.from || defaultIdentityOf(identities, settingsFrom, signature)?.from || settingsFrom,
       to: item.to || "",
@@ -2127,11 +2212,8 @@ export default function Home() {
       replyToMessageId: item.replyToMessageId,
       replyReferences: item.replyReferences ?? [],
       attachments: item.attachments ?? [],
-    });
-    setShowCc(Boolean(item.cc || item.bcc));
-    setComposeKind("draft");
-    setComposeOpen(true);
-    setActiveReadingTab("compose");
+    };
+    await openComposeWorkspaceTab("draft", nextCompose, Boolean(item.cc || item.bcc));
     setError("Message retiré de la boîte d’envoi et rouvert pour modification.");
   }
 
@@ -2164,9 +2246,7 @@ export default function Home() {
     const queued = await window.maildesk.enqueueOutbox({ ...payload, sendAt });
     await deleteCurrentDraftRecord();
     setOutbox(await window.maildesk.getOutbox() as OutboxEntry[]);
-    setCompose({ ...EMPTY_COMPOSE, attachments: [] });
-    setComposeOpen(false);
-    setActiveReadingTab("mail");
+    finishActiveComposeTab();
     setScheduleOpen(false);
 
     if (undoable) {
@@ -2186,8 +2266,7 @@ export default function Home() {
     const item = undoSend.item;
     await window.maildesk.deleteOutbox(item.id);
     setOutbox(await window.maildesk.getOutbox() as OutboxEntry[]);
-    setCurrentDraftId(globalThis.crypto.randomUUID());
-    setCompose({
+    const nextCompose: ComposeState = {
       ...EMPTY_COMPOSE,
       from: item.from || defaultIdentityOf(identities, settingsFrom, signature)?.from || settingsFrom,
       to: item.to || "",
@@ -2199,11 +2278,8 @@ export default function Home() {
       replyToMessageId: item.replyToMessageId,
       replyReferences: item.replyReferences ?? [],
       attachments: item.attachments ?? [],
-    });
-    setShowCc(Boolean(item.cc || item.bcc));
-    setComposeKind("draft");
-    setComposeOpen(true);
-    setActiveReadingTab("compose");
+    };
+    await openComposeWorkspaceTab("draft", nextCompose, Boolean(item.cc || item.bcc));
     setUndoSend(null);
     setError("Envoi annulé. Le message a été rouvert.");
   }
@@ -2278,9 +2354,7 @@ export default function Home() {
         await window.maildesk.enqueueOutbox(payload);
         await deleteCurrentDraftRecord();
         setOutbox(await window.maildesk.getOutbox() as OutboxEntry[]);
-        setCompose({ ...EMPTY_COMPOSE, attachments: [] });
-        setComposeOpen(false);
-        setActiveReadingTab("mail");
+        finishActiveComposeTab();
         setFolder("outbox");
         setError("Connexion indisponible ou service temporairement inaccessible : message placé dans la boîte d’envoi.");
         return;
@@ -2310,15 +2384,13 @@ export default function Home() {
         });
       }
 
-      setCompose({ ...EMPTY_COMPOSE, attachments: [] });
       if (window.maildesk) {
         await deleteCurrentDraftRecord();
         setOutbox(await window.maildesk.getOutbox() as OutboxEntry[]);
       } else {
         localStorage.removeItem(STORAGE.draft);
       }
-      setComposeOpen(false);
-      setActiveReadingTab("mail");
+      finishActiveComposeTab();
       await refresh();
       setFolder("sent");
     } catch (err) {
@@ -3974,15 +4046,21 @@ export default function Home() {
                 <span>{detail?.subject || selected.subject || "(Sans objet)"}</span>
               </button>
             )}
-            {composeOpen && (
-              <div className={activeReadingTab === "compose" ? "reading-tab compose-tab active" : "reading-tab compose-tab"}>
-                <button type="button" className="reading-tab-main" onClick={() => setActiveReadingTab("compose")}>
-                  <Edit3 size={14} />
-                  <span>{composeTabTitle}{compose.subject ? ` · ${compose.subject}` : ""}</span>
-                </button>
-                <button type="button" className="reading-tab-close" onClick={closeCompose} title="Fermer cet onglet et conserver le brouillon"><X size={13} /></button>
-              </div>
-            )}
+            {composeTabs.map((tab) => {
+              const active = activeReadingTab === "compose" && tab.id === activeComposeTabId;
+              const visibleCompose = tab.id === activeComposeTabId
+                ? { ...tab, compose, kind: composeKind, showCc, draftId: currentDraftId || tab.draftId }
+                : tab;
+              return (
+                <div key={tab.id} className={active ? "reading-tab compose-tab active" : "reading-tab compose-tab"}>
+                  <button type="button" className="reading-tab-main" onClick={() => void switchComposeTab(tab.id)}>
+                    <Edit3 size={14} />
+                    <span>{composeTabLabel(visibleCompose.kind, visibleCompose.compose)}</span>
+                  </button>
+                  <button type="button" className="reading-tab-close" onClick={() => void closeComposeTab(tab.id)} title="Fermer cet onglet et conserver le brouillon"><X size={13} /></button>
+                </div>
+              );
+            })}
           </div>}
           {activeReadingTab === "compose" && composeOpen ? renderComposePane() : !selected ? (
             folder === "outbox"
@@ -3993,9 +4071,6 @@ export default function Home() {
           ) : detail ? (
             <>
               <div className="reading-toolbar">
-                <button onClick={() => void startReplyFor(detail)}><Reply size={17} /> Répondre</button>
-                <button onClick={() => void startReplyFor(detail, true)}><ReplyAll size={17} /> Répondre à tous</button>
-                <button onClick={() => void startForwardFor(detail)}><Forward size={17} /> Transférer</button>
                 <button onClick={() => void openRuleBuilderFromMail(detail, "from")} title="Créer une règle depuis ce message"><Zap size={17} /> Règle</button>
                 {typeof window !== "undefined" && window.maildesk && <button onClick={() => void window.maildesk?.openMessageWindow(detail.id)} title="Ouvrir dans une nouvelle fenêtre"><ExternalLink size={17} /> Fenêtre</button>}
                 <button onClick={() => void printCurrentConversation()} title="Imprimer la conversation"><Printer size={17} /> Imprimer</button>
@@ -4008,8 +4083,6 @@ export default function Home() {
                     {MAIL_CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
                   </select>
                 </label>
-                <button className={flaggedIds.includes(detail.id) ? "state-action active flag" : "state-action"} onClick={() => toggleFlag(detail.id)} title={flaggedIds.includes(detail.id) ? "Retirer le drapeau" : "Marquer comme important"}><Flag size={17} fill={flaggedIds.includes(detail.id) ? "currentColor" : "none"} /> Important</button>
-                <button className={pinnedIds.includes(detail.id) ? "state-action active pin" : "state-action"} onClick={() => togglePin(detail.id)} title={pinnedIds.includes(detail.id) ? "Désépingler" : "Épingler en haut"}><Pin size={17} fill={pinnedIds.includes(detail.id) ? "currentColor" : "none"} /> Épingler</button>
                 {trashedIds.includes(detail.id) ? (
                   <>
                     <button onClick={() => restoreMail(detail)}><RotateCcw size={17} /> Restaurer</button>
@@ -4118,10 +4191,25 @@ export default function Home() {
               ) : (
                 <article className="message-detail">
                   <h2>{detail.subject || "(Sans objet)"}</h2>
-                  <div className="sender-card">
+                  <div className="sender-card outlook-sender-card">
                     <div className="sender-avatar">{senderName(detail.from).slice(0, 2).toUpperCase()}</div>
-                    <div className="sender-meta"><strong>{senderName(detail.from)}</strong><span>{detail.from}</span><small>À : {(detail.to ?? []).join(", ")}</small>{detail.cc?.length ? <small>Cc : {detail.cc.join(", ")}</small> : null}</div>
-                    <time>{detail.created_at ? new Date(detail.created_at).toLocaleString("fr-FR") : ""}</time>
+                    <div className="sender-meta">
+                      <strong>{senderName(detail.from)}</strong>
+                      <span>{detail.from}</span>
+                      <small>À : {(detail.to ?? []).join(", ")}</small>
+                      {detail.cc?.length ? <small>Cc : {detail.cc.join(", ")}</small> : null}
+                    </div>
+                    <div className="sender-card-side">
+                      <time>{detail.created_at ? new Date(detail.created_at).toLocaleString("fr-FR") : ""}</time>
+                      <div className="sender-quick-actions">
+                        <button type="button" onClick={() => void startReplyFor(detail)} title="Répondre"><Reply size={17} /></button>
+                        <button type="button" onClick={() => void startReplyFor(detail, true)} title="Répondre à tous"><ReplyAll size={17} /></button>
+                        <button type="button" onClick={() => void startForwardFor(detail)} title="Transférer"><Forward size={17} /></button>
+                        <button type="button" className={flaggedIds.includes(detail.id) ? "active flag" : ""} onClick={() => toggleFlag(detail.id)} title="Important"><Flag size={17} fill={flaggedIds.includes(detail.id) ? "currentColor" : "none"} /></button>
+                        <button type="button" className={pinnedIds.includes(detail.id) ? "active pin" : ""} onClick={() => togglePin(detail.id)} title="Épingler"><Pin size={17} fill={pinnedIds.includes(detail.id) ? "currentColor" : "none"} /></button>
+                        <button type="button" onClick={() => void showContextMenu(detail)} title="Plus d’actions"><MoreHorizontal size={18} /></button>
+                      </div>
+                    </div>
                   </div>
 
                   {detail.attachments?.length ? (
@@ -4594,7 +4682,7 @@ export default function Home() {
                     <div className="settings-panel-title"><div><span className="eyebrow">Application</span><h3>Mises à jour</h3><p>Manifest HTTPS + vérification SHA-256 avant installation.</p></div>{settingsPanelSaveButton("updates")}</div>
                     <label className="windows-option update-toggle"><input type="checkbox" checked={settingsAutoUpdateEnabled} onChange={(event) => setSettingsAutoUpdateEnabled(event.target.checked)} /><span><strong>Rechercher automatiquement les mises à jour</strong><small>Vérification au démarrage puis toutes les 6 heures.</small></span></label>
                     <label className="settings-field"><span>URL HTTPS du manifest latest.json</span><input value={settingsUpdateManifestUrl} onChange={(event) => setSettingsUpdateManifestUrl(event.target.value)} placeholder="https://votre-domaine.fr/maildesk/latest.json" /></label>
-                    <div className="update-manifest-example"><strong>Format attendu</strong><pre>{"{\n  \"version\": \"0.4.4\",\n  \"url\": \"https://votre-domaine.fr/MailDesk-Setup-0.4.4-x64.exe\",\n  \"sha256\": \"SHA256_DU_SETUP\",\n  \"notes\": \"Corrections et améliorations\"\n}"}</pre></div>
+                    <div className="update-manifest-example"><strong>Format attendu</strong><pre>{"{\n  \"version\": \"0.4.6\",\n  \"url\": \"https://votre-domaine.fr/MailDesk-Setup-0.4.6-x64.exe\",\n  \"sha256\": \"SHA256_DU_SETUP\",\n  \"notes\": \"Corrections et améliorations\"\n}"}</pre></div>
                     <div className="supabase-actions"><button type="button" className="primary-outline" onClick={() => void checkUpdatesNow()} disabled={checkingUpdates || !settingsUpdateManifestUrl.trim()}>{checkingUpdates ? "Vérification..." : "Vérifier maintenant"}</button>{updateReady && <button type="button" className="update-install-button" onClick={() => void installReadyUpdate()}>Installer la mise à jour</button>}</div>
                     {updateStatusMessage && <div className="settings-message">{updateStatusMessage}</div>}
                   </section>

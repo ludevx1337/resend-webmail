@@ -44,7 +44,7 @@ MailDesk est un client e-mail Windows construit avec **Electron + Next.js + Type
 - règles automatiques locales sur expéditeur, objet ou destinataire vers Archives, Favoris, Lu, Corbeille ou un dossier personnalisé ;
 - création de règle directement depuis un message (expéditeur, objet ou destinataire), préremplie dans l'onglet Règles ;
 - actualisation automatique configurable de **5 secondes à 1 heure**, sans clignotement de chargement en arrière-plan ;
-- onglets de lecture/rédaction dans le volet droit : mail courant non fermable + onglet Nouveau/Réponse/Transfert/Brouillon fermable ;
+- onglets de lecture/rédaction dans le volet droit : mail courant non fermable + plusieurs onglets Nouveau/Réponse/Transfert/Brouillon indépendants et fermables ;
 - bouton disquette dans le composeur pour forcer immédiatement la création ou la mise à jour du brouillon ;
 - filtres et tri ;
 - menu contextuel Windows au clic droit ;
@@ -194,9 +194,9 @@ Une relève à 5–10 secondes est possible mais l'interface avertit qu'elle aug
 
 ### Onglets de lecture et rédaction
 
-Le volet de lecture possède maintenant une barre d'onglets au-dessus de sa barre d'outils. L'onglet du mail sélectionné reste ouvert et ne comporte pas de bouton de fermeture. Un **Nouveau message**, une **Réponse**, une **Réponse à tous**, un **Transfert** ou un **Brouillon** ouvre un onglet de rédaction fermable à côté.
+Le volet de lecture possède maintenant une barre d'onglets au-dessus de sa barre d'outils. L'onglet du mail sélectionné reste ouvert et ne comporte pas de bouton de fermeture. Chaque **Nouveau message**, **Réponse**, **Réponse à tous**, **Transfert** ou **Brouillon** crée son propre onglet de rédaction indépendant.
 
-Changer de mail ramène simplement sur l'onglet de lecture sans détruire la rédaction en cours. Fermer l'onglet de rédaction conserve le brouillon ; la disquette **Brouillon** permet de le sauvegarder immédiatement. Démarrer un nouveau message ne reprend plus le contenu du dernier transfert/réponse.
+Plusieurs rédactions peuvent donc rester ouvertes simultanément. Cliquer sur un onglet restaure son destinataire, son objet, son contenu, ses pièces jointes et son contexte de réponse/transfert. Fermer un onglet de rédaction conserve son brouillon ; la disquette **Brouillon** permet de le sauvegarder immédiatement. Démarrer un nouveau message ne remplace plus une réponse ou un transfert déjà ouvert.
 
 ### Liste Outlook, regroupements et sélection multiple
 
@@ -341,8 +341,8 @@ Format du manifest :
 
 ```json
 {
-  "version": "0.4.4",
-  "url": "https://votre-domaine.fr/MailDesk-Setup-0.4.4-x64.exe",
+  "version": "0.4.6",
+  "url": "https://votre-domaine.fr/MailDesk-Setup-0.4.6-x64.exe",
   "sha256": "SHA256_HEXADECIMAL_64_CARACTERES",
   "notes": "Corrections et améliorations"
 }
@@ -407,7 +407,7 @@ Sorties :
 
 ```text
 dist-electron\win-unpacked\MailDesk.exe
-release-0.4.4\MailDesk-Setup-0.4.4-x64.exe
+release-0.4.5\MailDesk-Setup-0.4.5-x64.exe
 ```
 
 ## Architecture
