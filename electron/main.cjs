@@ -27,6 +27,7 @@ const {
   getActiveDraft,
   getDraft,
   getDueOutbox,
+  getDueRuleWebhooks,
   getLocalMail,
   getNextOutboxAttemptAt,
   getSnapshot,
@@ -36,15 +37,19 @@ const {
   listCustomFolders,
   listDrafts,
   listOutbox,
+  listRuleRuns,
   listRules,
   listTemplates,
   markOutboxFailed,
   markOutboxSending,
+  markRuleWebhookDelivered,
+  markRuleWebhookFailed,
   reorderCustomFolders,
   resetSendingOutbox,
   restoreDatabaseBackup,
   retryOutbox,
   runRulesOnInbox,
+  testRuleOnInbox,
   saveActiveDraft,
   saveCalendarEvent,
   saveContact,
@@ -60,7 +65,7 @@ const {
   upsertMany,
 } = require("./db.cjs");
 const { syncWithSupabase } = require("./sync.cjs");
-const { initializeSupabase } = require("./supabase-provision.cjs");
+const { deployMobileEdgeFunction, getMobileProvisioning, getMobileProvisioningStatus, initializeSupabase } = require("./supabase-provision.cjs");
 const { checkForUpdate } = require("./updater.cjs");
 
 let mainWindow = null;
@@ -74,7 +79,12 @@ let setupResolver = null;
 let outboxTimer = null;
 let outboxWakeTimer = null;
 let updateTimer = null;
+let ruleWebhookTimer = null;
+let inboxPollTimer = null;
 let outboxProcessing = false;
+let ruleWebhookProcessing = false;
+let inboxPollInFlight = false;
+let inboxPollPrimed = false;
 let pendingMailto = null;
 const secondaryWindows = new Set();
 let pendingUpdateInstaller = "";
@@ -280,6 +290,89 @@ function updateUnreadCount(count) {
   return unread;
 }
 
+async function pollInboxInBackground() {
+  if (inboxPollInFlight || !applicationUrl || isQuitting) return { ok: false, skipped: true };
+  inboxPollInFlight = true;
+
+  try {
+    const before = getSnapshot();
+    const existingIds = new Set([
+      ...before.messages
+        .filter((mail) => mail.direction !== "outbound")
+        .map((mail) => String(mail.id)),
+      ...(before.deletedIds || []).map((id) => String(id)),
+    ]);
+
+    const response = await fetch(`${applicationUrl}/api/mail/inbox`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(20_000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(result?.error || `Erreur HTTP ${response.status}`);
+    }
+
+    const inbox = Array.isArray(result?.emails) ? result.emails : [];
+    const newMessages = inbox.filter((mail) => mail?.id && !existingIds.has(String(mail.id)));
+    const wasPrimed = inboxPollPrimed;
+    inboxPollPrimed = true;
+
+    if (newMessages.length === 0) {
+      return { ok: true, newMessages: 0, notified: 0 };
+    }
+
+    const after = upsertMany(newMessages, "inbound");
+    void processRuleWebhooks();
+
+    const newIds = new Set(newMessages.map((mail) => String(mail.id)));
+    const notifiableMessages = after.messages.filter((mail) =>
+      newIds.has(String(mail.id))
+      && mail.direction !== "outbound"
+      && mail.localFolder === "inbox"
+      && !mail.localRead
+      && !mail.localDeleted
+    );
+
+    if (wasPrimed && notifiableMessages.length > 0) {
+      const latest = notifiableMessages[0];
+      showNewMailNotification({
+        id: latest?.id,
+        count: notifiableMessages.length,
+        title: latest?.from || "Nouveau message",
+        body: latest?.subject || "Nouveau message",
+      });
+    }
+
+    if (newMessages.length > 0) {
+      sendMainAction("inbox-updated", {
+        id: newMessages[0]?.id,
+        count: newMessages.length,
+      });
+      try {
+        await syncWithSupabase(effectiveSettings());
+      } catch (error) {
+        console.warn("Background Supabase sync failed", error);
+      }
+    }
+
+    return { ok: true, newMessages: newMessages.length, notified: notifiableMessages.length };
+  } catch (error) {
+    console.warn("Background inbox refresh failed", error);
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    inboxPollInFlight = false;
+  }
+}
+
+function scheduleInboxPolling({ immediate = false } = {}) {
+  if (inboxPollTimer) clearInterval(inboxPollTimer);
+  inboxPollTimer = null;
+  const seconds = Math.max(5, Math.min(3600, Number(effectiveSettings().refreshIntervalSeconds ?? 60)));
+  inboxPollTimer = setInterval(() => void pollInboxInBackground(), seconds * 1000);
+  if (immediate) setTimeout(() => void pollInboxInBackground(), 1500);
+  return seconds;
+}
+
 function scheduleNextOutboxWake() {
   if (outboxWakeTimer) clearTimeout(outboxWakeTimer);
   outboxWakeTimer = null;
@@ -366,6 +459,46 @@ async function processOutbox() {
   notifyOutboxUpdated();
   scheduleNextOutboxWake();
   return listOutbox();
+}
+
+async function processRuleWebhooks() {
+  if (ruleWebhookProcessing || isQuitting) return;
+  ruleWebhookProcessing = true;
+
+  try {
+    const due = getDueRuleWebhooks(10);
+    for (const item of due) {
+      try {
+        const response = await fetch(item.url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-MailDesk-Event": "maildesk.rule.matched",
+          },
+          body: item.payloadJson,
+          signal: AbortSignal.timeout(15_000),
+        });
+
+        if (response.ok) {
+          markRuleWebhookDelivered(item.id);
+          continue;
+        }
+
+        const body = await response.text().catch(() => "");
+        const detail = `HTTP ${response.status}${body ? ` — ${body.slice(0, 300)}` : ""}`;
+        const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+        const delay = retryable
+          ? Math.min(30 * 60, 30 * Math.max(1, 2 ** Number(item.attempts || 0)))
+          : 6 * 60 * 60;
+        markRuleWebhookFailed(item.id, detail, delay);
+      } catch (error) {
+        const delay = Math.min(30 * 60, 30 * Math.max(1, 2 ** Number(item.attempts || 0)));
+        markRuleWebhookFailed(item.id, error instanceof Error ? error.message : String(error), delay);
+      }
+    }
+  } finally {
+    ruleWebhookProcessing = false;
+  }
 }
 
 async function pickAttachments() {
@@ -878,6 +1011,7 @@ function createWindow(url) {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      backgroundThrottling: false,
     },
   });
 
@@ -936,6 +1070,9 @@ ipcMain.handle("maildesk:get-settings", () => ({
   databasePath: databasePath(),
   isPackaged: app.isPackaged,
 }));
+ipcMain.handle("maildesk:mobile-provisioning", async () => getMobileProvisioning(effectiveSettings()));
+ipcMain.handle("maildesk:mobile-provisioning-status", () => getMobileProvisioningStatus(effectiveSettings()));
+ipcMain.handle("maildesk:supabase-edge-deploy", async () => deployMobileEdgeFunction(effectiveSettings()));
 ipcMain.handle("maildesk:save-settings", async (_event, input) => {
   let saved = saveStoredSettings(input);
   applyStoredSettings();
@@ -965,6 +1102,7 @@ ipcMain.handle("maildesk:save-settings", async (_event, input) => {
     }
   }
 
+  scheduleInboxPolling();
   return { ...publicSettings(), sync, requiresDevRestart: !app.isPackaged };
 });
 
@@ -1031,7 +1169,13 @@ ipcMain.handle("maildesk:folder-delete", (_event, id) => deleteCustomFolder(id))
 ipcMain.handle("maildesk:rules-list", () => listRules());
 ipcMain.handle("maildesk:rule-save", (_event, rule) => saveRule(rule));
 ipcMain.handle("maildesk:rule-delete", (_event, id) => deleteRule(id));
-ipcMain.handle("maildesk:rules-run", () => runRulesOnInbox());
+ipcMain.handle("maildesk:rule-test", (_event, rule) => testRuleOnInbox(rule));
+ipcMain.handle("maildesk:rule-runs", (_event, payload) => listRuleRuns(payload?.ruleId, payload?.limit));
+ipcMain.handle("maildesk:rules-run", async () => {
+  const result = runRulesOnInbox();
+  void processRuleWebhooks();
+  return result;
+});
 
 ipcMain.handle("maildesk:templates-list", () => listTemplates());
 ipcMain.handle("maildesk:template-save", (_event, template) => saveTemplate(template));
@@ -1053,10 +1197,12 @@ ipcMain.handle("maildesk:db-get", (_event, id) => getLocalMail(id));
 ipcMain.handle("maildesk:db-cache-list", (_event, payload) => {
   if (payload?.inbox) upsertMany(payload.inbox, "inbound");
   if (payload?.sent) upsertMany(payload.sent, "outbound");
+  void processRuleWebhooks();
   return getSnapshot();
 });
 ipcMain.handle("maildesk:db-cache-detail", (_event, payload) => {
   upsertMail(payload?.mail, payload?.direction === "outbound" ? "outbound" : "inbound");
+  void processRuleWebhooks();
   return getLocalMail(payload?.mail?.id);
 });
 ipcMain.handle("maildesk:db-update-state", (_event, payload) => updateState(payload?.id, payload?.patch));
@@ -1168,15 +1314,19 @@ app.whenReady().then(async () => {
   }
 
   applyStoredSettings();
-  getSnapshot();
+  const startupSnapshot = getSnapshot();
+  inboxPollPrimed = startupSnapshot.messages.some((mail) => mail.direction !== "outbound") || startupSnapshot.deletedIds.length > 0;
   resetSendingOutbox();
   Menu.setApplicationMenu(null);
   applicationUrl = app.isPackaged ? await startProductionServer() : "http://127.0.0.1:3000";
   createWindow(applicationUrl);
   createTray();
 
+  scheduleInboxPolling();
   setTimeout(() => void processOutbox(), 2000);
   outboxTimer = setInterval(() => void processOutbox(), 60_000);
+  setTimeout(() => void processRuleWebhooks(), 2500);
+  ruleWebhookTimer = setInterval(() => void processRuleWebhooks(), 60_000);
   setTimeout(() => void runUpdateCheck({ manual: false }), 8000);
   updateTimer = setInterval(() => void runUpdateCheck({ manual: false }), 6 * 60 * 60 * 1000);
 
@@ -1199,6 +1349,10 @@ app.on("before-quit", () => {
   outboxWakeTimer = null;
   if (updateTimer) clearInterval(updateTimer);
   updateTimer = null;
+  if (ruleWebhookTimer) clearInterval(ruleWebhookTimer);
+  ruleWebhookTimer = null;
+  if (inboxPollTimer) clearInterval(inboxPollTimer);
+  inboxPollTimer = null;
   for (const win of secondaryWindows) {
     if (!win.isDestroyed()) win.destroy();
   }

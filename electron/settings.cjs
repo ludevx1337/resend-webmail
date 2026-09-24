@@ -57,6 +57,7 @@ function defaults() {
     supabaseKey: "",
     supabaseProjectRef: "",
     supabaseManagementToken: "",
+    mobileApiUrl: "",
     autoUpdateEnabled: false,
     updateManifestUrl: "",
   };
@@ -119,6 +120,7 @@ function effectiveSettings() {
     supabaseKey: stored.supabaseKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_ANON_KEY || "",
     supabaseProjectRef: stored.supabaseProjectRef || process.env.SUPABASE_PROJECT_REF || "",
     supabaseManagementToken: stored.supabaseManagementToken || process.env.SUPABASE_ACCESS_TOKEN || "",
+    mobileApiUrl: stored.mobileApiUrl || process.env.MAILDESK_PUBLIC_API_URL || "",
     autoUpdateEnabled: Boolean(stored.autoUpdateEnabled),
     updateManifestUrl: stored.updateManifestUrl || process.env.MAILDESK_UPDATE_MANIFEST_URL || "",
     refreshIntervalSeconds: Math.max(5, Math.min(3600, Number(stored.refreshIntervalSeconds ?? 60))),
@@ -139,6 +141,7 @@ function applyStoredSettings() {
   if (stored.supabaseKey) process.env.SUPABASE_SERVICE_ROLE_KEY = stored.supabaseKey;
   if (stored.supabaseProjectRef) process.env.SUPABASE_PROJECT_REF = stored.supabaseProjectRef;
   if (stored.supabaseManagementToken) process.env.SUPABASE_ACCESS_TOKEN = stored.supabaseManagementToken;
+  if (stored.mobileApiUrl) process.env.MAILDESK_PUBLIC_API_URL = stored.mobileApiUrl;
   return effectiveSettings();
 }
 
@@ -175,6 +178,9 @@ function saveStoredSettings(input) {
     supabaseManagementToken: typeof input?.supabaseManagementToken === "string" && input.supabaseManagementToken.trim()
       ? input.supabaseManagementToken.trim()
       : current.supabaseManagementToken,
+    mobileApiUrl: typeof input?.mobileApiUrl === "string"
+      ? input.mobileApiUrl.trim().replace(/\/$/, "")
+      : current.mobileApiUrl,
     autoUpdateEnabled: typeof input?.autoUpdateEnabled === "boolean"
       ? input.autoUpdateEnabled
       : Boolean(current.autoUpdateEnabled),
@@ -209,6 +215,9 @@ function saveStoredSettings(input) {
   if (next.supabaseManagementToken) process.env.SUPABASE_ACCESS_TOKEN = next.supabaseManagementToken;
   else delete process.env.SUPABASE_ACCESS_TOKEN;
 
+  if (next.mobileApiUrl) process.env.MAILDESK_PUBLIC_API_URL = next.mobileApiUrl;
+  else delete process.env.MAILDESK_PUBLIC_API_URL;
+
   return next;
 }
 
@@ -226,6 +235,7 @@ function publicSettings() {
     hasApiKey: Boolean(current.apiKey),
     hasSupabaseKey: Boolean(current.supabaseKey),
     hasSupabaseManagementToken: Boolean(current.supabaseManagementToken),
+    mobileApiUrl: current.mobileApiUrl || "",
     autoUpdateEnabled: Boolean(current.autoUpdateEnabled),
     updateManifestUrl: current.updateManifestUrl || "",
   };

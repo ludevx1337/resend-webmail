@@ -1,9 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { authorizeMailRequest } from "@/lib/mail-request-auth";
 import { getResend } from "@/lib/resend";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const auth = await authorizeMailRequest(request);
+  if (!auth.ok) return auth.response;
   try {
     const resend = getResend();
     const { data, error } = await resend.emails.receiving.list({ limit: 100 });

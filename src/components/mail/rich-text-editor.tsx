@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "@tiptap/extension-image";
 import TextAlign from "@tiptap/extension-text-align";
 import Placeholder from "@tiptap/extension-placeholder";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -50,6 +51,11 @@ export function RichTextEditor({
             target: "_blank",
           },
         },
+      }),
+      Image.configure({
+        allowBase64: true,
+        inline: true,
+        HTMLAttributes: { class: "maildesk-inline-image" },
       }),
       Placeholder.configure({ placeholder }),
       TextAlign.configure({ types: ["heading", "paragraph"] }),

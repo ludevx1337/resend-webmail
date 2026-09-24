@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authorizeMailRequest } from "@/lib/mail-request-auth";
 import { getResend } from "@/lib/resend";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +23,9 @@ function parseMessageIds(value: string) {
   return raw.split(/\s+/).map((item) => item.trim()).filter(Boolean);
 }
 
-export async function GET(_request: NextRequest, { params }: Params) {
+export async function GET(request: NextRequest, { params }: Params) {
+  const auth = await authorizeMailRequest(request);
+  if (!auth.ok) return auth.response;
   try {
     const { folder, id } = await params;
     const resend = getResend();

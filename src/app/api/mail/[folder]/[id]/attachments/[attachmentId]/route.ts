@@ -1,11 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { authorizeMailRequest } from "@/lib/mail-request-auth";
 import { getResend } from "@/lib/resend";
 
 type Params = {
   params: Promise<{ folder: string; id: string; attachmentId: string }>;
 };
 
-export async function GET(_request: Request, { params }: Params) {
+export async function GET(request: NextRequest, { params }: Params) {
+  const auth = await authorizeMailRequest(request);
+  if (!auth.ok) return auth.response;
   try {
     const { folder, id, attachmentId } = await params;
     const resend = getResend();
@@ -20,7 +23,15 @@ export async function GET(_request: Request, { params }: Params) {
       );
     }
 
-    return NextResponse.redirect(result.data.download_url);
+    if ((request.headers.get("accept") || "").includes("application/json")) {
+      return NextResponse.json(
+        { url: result.data.download_url },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    const redirect = NextResponse.redirect(result.data.download_url);
+    redirect.headers.set("Cache-Control", "no-store");
+    return redirect;
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Impossible de télécharger la pièce jointe" },

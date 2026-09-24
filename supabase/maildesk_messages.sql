@@ -81,8 +81,13 @@ create table if not exists public.maildesk_rules (
   field text not null check (field in ('from', 'subject', 'to')),
   operator text not null check (operator in ('contains', 'equals', 'ends_with')),
   value text not null,
-  action text not null check (action in ('archive', 'star', 'read', 'trash', 'move_to_folder')),
+  action text not null check (action in ('archive', 'star', 'read', 'trash', 'move_to_folder', 'webhook')),
   action_value text null,
+  conditions_json jsonb not null default '[]'::jsonb,
+  actions_json jsonb not null default '[]'::jsonb,
+  match_mode text not null default 'all' check (match_mode in ('all', 'any')),
+  priority integer not null default 100,
+  stop_processing boolean not null default false,
   enabled boolean not null default true,
   is_deleted boolean not null default false,
   created_at timestamptz not null default now(),
@@ -91,6 +96,11 @@ create table if not exists public.maildesk_rules (
 
 alter table public.maildesk_rules
   add column if not exists action_value text null,
+  add column if not exists conditions_json jsonb not null default '[]'::jsonb,
+  add column if not exists actions_json jsonb not null default '[]'::jsonb,
+  add column if not exists match_mode text not null default 'all',
+  add column if not exists priority integer not null default 100,
+  add column if not exists stop_processing boolean not null default false,
   add column if not exists is_deleted boolean not null default false;
 
 alter table public.maildesk_rules
@@ -98,7 +108,14 @@ alter table public.maildesk_rules
 
 alter table public.maildesk_rules
   add constraint maildesk_rules_action_check
-  check (action in ('archive', 'star', 'read', 'trash', 'move_to_folder'));
+  check (action in ('archive', 'star', 'read', 'trash', 'move_to_folder', 'webhook'));
+
+alter table public.maildesk_rules
+  drop constraint if exists maildesk_rules_match_mode_check;
+
+alter table public.maildesk_rules
+  add constraint maildesk_rules_match_mode_check
+  check (match_mode in ('all', 'any'));
 
 create index if not exists maildesk_messages_folder_created_idx
   on public.maildesk_messages (folder, created_at desc);
@@ -115,8 +132,10 @@ create index if not exists maildesk_messages_parent_message_id_idx
 create index if not exists maildesk_contacts_rank_idx
   on public.maildesk_contacts (is_favorite desc, times_seen desc, last_seen_at desc);
 
-create index if not exists maildesk_rules_enabled_idx
-  on public.maildesk_rules (enabled, created_at);
+drop index if exists public.maildesk_rules_enabled_idx;
+
+create index maildesk_rules_enabled_idx
+  on public.maildesk_rules (enabled, priority, created_at);
 
 create table if not exists public.maildesk_templates (
   id text primary key,

@@ -44,6 +44,7 @@ type LocalMail = {
     size?: number;
     content_type?: string;
     content_disposition?: string | null;
+    url?: string;
   }>;
 };
 
@@ -139,17 +140,46 @@ type CustomFolder = {
   updatedAt: string;
 };
 
-type MailRule = {
+type MailRuleCondition = {
   id: string;
-  name: string;
   field: "from" | "subject" | "to";
   operator: "contains" | "equals" | "ends_with";
   value: string;
-  action: "archive" | "star" | "read" | "trash" | "move_to_folder";
+};
+
+type MailRuleAction = {
+  id: string;
+  type: "archive" | "star" | "read" | "trash" | "move_to_folder" | "webhook";
+  value?: string;
+};
+
+type MailRule = {
+  id: string;
+  name: string;
+  field: MailRuleCondition["field"];
+  operator: MailRuleCondition["operator"];
+  value: string;
+  action: MailRuleAction["type"];
   actionValue?: string;
+  conditions: MailRuleCondition[];
+  actions: MailRuleAction[];
+  matchMode: "all" | "any";
+  priority: number;
+  stopProcessing: boolean;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+type MailRuleRun = {
+  id: string;
+  ruleId: string;
+  messageId: string;
+  ruleName: string;
+  actions: Array<{ type: MailRuleAction["type"]; value?: string; queued?: boolean }>;
+  status: string;
+  detail: string;
+  createdAt: string;
 };
 
 type LocalSnapshot = {
@@ -207,6 +237,7 @@ declare global {
         themeColor: string;
         supabaseUrl: string;
         supabaseProjectRef: string;
+        mobileApiUrl: string;
         hasApiKey: boolean;
         hasSupabaseKey: boolean;
         hasSupabaseManagementToken: boolean;
@@ -214,6 +245,34 @@ declare global {
         updateManifestUrl: string;
         databasePath: string;
         isPackaged: boolean;
+      }>;
+      getMobileProvisioning: () => Promise<{
+        payload: {
+          type: "maildesk.mobile.provision";
+          version: 1;
+          supabaseUrl: string;
+          supabasePublishableKey: string;
+          apiUrl: string;
+        };
+        encoded: string;
+        projectRef: string;
+        hasApiUrl: boolean;
+      }>;
+      getMobileProvisioningStatus: () => Promise<{
+        configured: boolean;
+        reason?: string;
+        projectRef?: string;
+        source?: "public-key" | "management-token";
+        apiUrl?: string;
+      }>;
+      deployMobileEdgeFunction: () => Promise<{
+        ok: boolean;
+        slug: string;
+        projectRef: string;
+        apiUrl: string;
+        version?: number | null;
+        status?: string;
+        message: string;
       }>;
       saveSettings: (settings: {
         from?: string;
@@ -227,6 +286,7 @@ declare global {
         supabaseKey?: string;
         supabaseProjectRef?: string;
         supabaseManagementToken?: string;
+        mobileApiUrl?: string;
         autoUpdateEnabled?: boolean;
         updateManifestUrl?: string;
       }) => Promise<{
@@ -238,6 +298,7 @@ declare global {
         themeColor: string;
         supabaseUrl: string;
         supabaseProjectRef: string;
+        mobileApiUrl: string;
         hasApiKey: boolean;
         hasSupabaseKey: boolean;
         hasSupabaseManagementToken: boolean;
@@ -256,6 +317,7 @@ declare global {
         supabaseKey?: string;
         supabaseProjectRef?: string;
         supabaseManagementToken?: string;
+        mobileApiUrl?: string;
       }) => Promise<{
         ok: boolean;
         message: string;
@@ -318,14 +380,27 @@ declare global {
       saveRule: (rule: {
         id?: string;
         name?: string;
-        field: MailRule["field"];
-        operator: MailRule["operator"];
-        value: string;
-        action: MailRule["action"];
+        field?: MailRule["field"];
+        operator?: MailRule["operator"];
+        value?: string;
+        action?: MailRule["action"];
         actionValue?: string;
+        conditions?: MailRuleCondition[];
+        actions?: MailRuleAction[];
+        matchMode?: "all" | "any";
+        priority?: number;
+        stopProcessing?: boolean;
         enabled?: boolean;
       }) => Promise<MailRule>;
       deleteRule: (id: string) => Promise<boolean>;
+      testRule: (rule: {
+        conditions: MailRuleCondition[];
+        actions: MailRuleAction[];
+        matchMode: "all" | "any";
+        priority?: number;
+        stopProcessing?: boolean;
+      }) => Promise<{ matched: number; samples: Array<{ id: string; from: string; subject: string; createdAt: string }> }>;
+      listRuleRuns: (ruleId?: string, limit?: number) => Promise<MailRuleRun[]>;
       runRules: () => Promise<{ matched: number; snapshot: LocalSnapshot }>;
       listTemplates: () => Promise<MailTemplate[]>;
       saveTemplate: (template: {
@@ -387,7 +462,7 @@ declare global {
       getLocalSnapshot: () => Promise<LocalSnapshot>;
       searchLocalMail: (query: string, limit?: number) => Promise<LocalMail[]>;
       getLocalMail: (id: string) => Promise<LocalMail | null>;
-      cacheMailLists: (payload: { inbox: LocalMail[]; sent: LocalMail[] }) => Promise<LocalSnapshot>;
+      cacheMailLists: (payload: { inbox?: LocalMail[]; sent?: LocalMail[] }) => Promise<LocalSnapshot>;
       cacheMailDetail: (payload: { mail: LocalMail; direction: "inbound" | "outbound" }) => Promise<LocalMail | null>;
       updateLocalMailState: (payload: {
         id: string;

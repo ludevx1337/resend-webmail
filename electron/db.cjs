@@ -107,14 +107,53 @@ function getDb() {
       field TEXT NOT NULL CHECK(field IN ('from','subject','to')),
       operator TEXT NOT NULL CHECK(operator IN ('contains','equals','ends_with')),
       value TEXT NOT NULL,
-      action TEXT NOT NULL CHECK(action IN ('archive','star','read','trash','move_to_folder')),
+      action TEXT NOT NULL CHECK(action IN ('archive','star','read','trash','move_to_folder','webhook')),
       action_value TEXT,
+      conditions_json TEXT NOT NULL DEFAULT '[]',
+      actions_json TEXT NOT NULL DEFAULT '[]',
+      match_mode TEXT NOT NULL DEFAULT 'all' CHECK(match_mode IN ('all','any')),
+      priority INTEGER NOT NULL DEFAULT 100,
+      stop_processing INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
       is_deleted INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_mail_rules_enabled ON mail_rules(enabled, created_at);
+
+    CREATE TABLE IF NOT EXISTS rule_run_log (
+      id TEXT PRIMARY KEY,
+      rule_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      rule_name TEXT NOT NULL,
+      actions_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'matched',
+      detail TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_rule_run_log_rule_created ON rule_run_log(rule_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS rule_webhook_outbox (
+      id TEXT PRIMARY KEY,
+      rule_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','failed','delivered')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '',
+      next_attempt_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(rule_id, message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_rule_webhook_due ON rule_webhook_outbox(status, next_attempt_at, created_at);
+
+    CREATE TABLE IF NOT EXISTS sync_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS custom_folders (
       id TEXT PRIMARY KEY,
@@ -186,6 +225,11 @@ function getDb() {
   ensureTableColumn(database, "custom_folders", "is_deleted", "INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(database, "custom_folders", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(database, "mail_rules", "action_value", "TEXT");
+  ensureTableColumn(database, "mail_rules", "conditions_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(database, "mail_rules", "actions_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureTableColumn(database, "mail_rules", "match_mode", "TEXT NOT NULL DEFAULT 'all'");
+  ensureTableColumn(database, "mail_rules", "priority", "INTEGER NOT NULL DEFAULT 100");
+  ensureTableColumn(database, "mail_rules", "stop_processing", "INTEGER NOT NULL DEFAULT 0");
   ensureTableColumn(database, "mail_rules", "is_deleted", "INTEGER NOT NULL DEFAULT 0");
   database.exec("DROP INDEX IF EXISTS idx_custom_folders_name;");
   database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_folders_name ON custom_folders(lower(name)) WHERE is_deleted = 0;");
@@ -193,7 +237,7 @@ function getDb() {
   const mailRulesSql = String(
     database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mail_rules'").get()?.sql || "",
   );
-  if (!mailRulesSql.includes("move_to_folder")) {
+  if (!mailRulesSql.includes("webhook")) {
     database.exec("BEGIN");
     try {
       database.exec("ALTER TABLE mail_rules RENAME TO mail_rules_legacy;");
@@ -204,8 +248,13 @@ function getDb() {
           field TEXT NOT NULL CHECK(field IN ('from','subject','to')),
           operator TEXT NOT NULL CHECK(operator IN ('contains','equals','ends_with')),
           value TEXT NOT NULL,
-          action TEXT NOT NULL CHECK(action IN ('archive','star','read','trash','move_to_folder')),
+          action TEXT NOT NULL CHECK(action IN ('archive','star','read','trash','move_to_folder','webhook')),
           action_value TEXT,
+          conditions_json TEXT NOT NULL DEFAULT '[]',
+          actions_json TEXT NOT NULL DEFAULT '[]',
+          match_mode TEXT NOT NULL DEFAULT 'all' CHECK(match_mode IN ('all','any')),
+          priority INTEGER NOT NULL DEFAULT 100,
+          stop_processing INTEGER NOT NULL DEFAULT 0,
           enabled INTEGER NOT NULL DEFAULT 1,
           is_deleted INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL,
@@ -221,13 +270,15 @@ function getDb() {
         FROM mail_rules_legacy;
       `);
       database.exec("DROP TABLE mail_rules_legacy;");
-      database.exec("CREATE INDEX IF NOT EXISTS idx_mail_rules_enabled ON mail_rules(enabled, created_at);");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_mail_rules_enabled ON mail_rules(enabled, priority, created_at);");
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");
       throw error;
     }
   }
+  database.exec("DROP INDEX IF EXISTS idx_mail_rules_enabled;");
+  database.exec("CREATE INDEX IF NOT EXISTS idx_mail_rules_enabled ON mail_rules(enabled, priority, created_at);");
 
   const legacyActiveDraft = database.prepare("SELECT id FROM drafts WHERE id = 'active'").get();
   if (legacyActiveDraft) {
@@ -303,11 +354,35 @@ function json(value, fallback = []) {
 }
 
 function parse(value, fallback = []) {
+  if (value == null || value === "") return fallback;
+  if (typeof value !== "string") return value;
   try {
-    return value ? JSON.parse(value) : fallback;
+    return JSON.parse(value);
   } catch {
     return fallback;
   }
+}
+
+function attachmentMetadata(value) {
+  const items = Array.isArray(value) ? value : [];
+  return items.map((item) => {
+    if (!item || typeof item !== "object") return null;
+    const id = String(item.id || item.attachment_id || "").trim();
+    const filename = String(item.filename || item.name || "").trim();
+    const contentType = String(item.content_type || item.contentType || item.type || "").trim();
+    const contentId = String(item.content_id || item.contentId || "").trim();
+    const disposition = String(item.disposition || "").trim();
+    const size = Number(item.size || 0);
+
+    return {
+      ...(id ? { id } : {}),
+      ...(filename ? { filename } : {}),
+      ...(Number.isFinite(size) && size > 0 ? { size } : {}),
+      ...(contentType ? { content_type: contentType } : {}),
+      ...(contentId ? { content_id: contentId } : {}),
+      ...(disposition ? { disposition } : {}),
+    };
+  }).filter(Boolean);
 }
 
 function headerValue(headers, name) {
@@ -537,13 +612,23 @@ function deleteCustomFolder(id) {
         synced_at = NULL
     WHERE folder = ?
   `).run(now, `custom:${folderId}`).changes;
-  const deletedRules = db.prepare(`
+  let deletedRules = Number(db.prepare(`
     UPDATE mail_rules
     SET is_deleted = 1, updated_at = ?
     WHERE action = 'move_to_folder' AND action_value = ? AND is_deleted = 0
-  `).run(now, folderId).changes;
+  `).run(now, folderId).changes || 0);
+
+  const v2Rules = db.prepare("SELECT * FROM mail_rules WHERE is_deleted = 0").all();
+  const deleteRuleStatement = db.prepare("UPDATE mail_rules SET is_deleted = 1, updated_at = ? WHERE id = ?");
+  for (const rule of v2Rules) {
+    const actions = normalizeRuleActions(rule);
+    if (actions.some((action) => action.type === "move_to_folder" && action.value === folderId)) {
+      deletedRules += Number(deleteRuleStatement.run(now, rule.id).changes || 0);
+    }
+  }
+
   db.prepare("UPDATE custom_folders SET is_deleted = 1, updated_at = ? WHERE id = ?").run(now, folderId);
-  return { ok: true, moved: Number(moved || 0), deletedRules: Number(deletedRules || 0) };
+  return { ok: true, moved: Number(moved || 0), deletedRules };
 }
 
 function reorderCustomFolders(ids = []) {
@@ -562,16 +647,104 @@ function reorderCustomFolders(ids = []) {
   return listCustomFolders();
 }
 
+const RULE_FIELDS = new Set(["from", "subject", "to"]);
+const RULE_OPERATORS = new Set(["contains", "equals", "ends_with"]);
+const RULE_ACTIONS = new Set(["archive", "star", "read", "trash", "move_to_folder", "webhook"]);
+
+function normalizeRuleConditions(rule = {}) {
+  const input = Array.isArray(rule.conditions)
+    ? rule.conditions
+    : parse(rule.conditions_json, []);
+  const fallback = [{
+    field: String(rule.field || "from"),
+    operator: String(rule.operator || "contains"),
+    value: String(rule.value || ""),
+  }];
+  return (input.length ? input : fallback)
+    .slice(0, 10)
+    .map((condition, index) => ({
+      id: String(condition?.id || `condition-${index + 1}`),
+      field: String(condition?.field || ""),
+      operator: String(condition?.operator || ""),
+      value: String(condition?.value || "").trim(),
+    }));
+}
+
+function normalizeRuleActions(rule = {}) {
+  const input = Array.isArray(rule.actions)
+    ? rule.actions
+    : parse(rule.actions_json, []);
+  const fallback = [{
+    type: String(rule.action || "archive"),
+    value: String(rule.actionValue ?? rule.action_value ?? ""),
+  }];
+  return (input.length ? input : fallback)
+    .slice(0, 10)
+    .map((action, index) => ({
+      id: String(action?.id || `action-${index + 1}`),
+      type: String(action?.type || ""),
+      value: String(action?.value || "").trim(),
+    }));
+}
+
+function validateRuleParts(rule = {}) {
+  const conditions = normalizeRuleConditions(rule);
+  const actions = normalizeRuleActions(rule);
+  if (!conditions.length || !actions.length) throw new Error("Une règle doit contenir au moins une condition et une action.");
+
+  for (const condition of conditions) {
+    if (!RULE_FIELDS.has(condition.field) || !RULE_OPERATORS.has(condition.operator) || !condition.value) {
+      throw new Error("Une condition de règle est incomplète.");
+    }
+  }
+
+  if (actions.filter((action) => action.type === "webhook").length > 1) {
+    throw new Error("Une règle ne peut contenir qu’un seul webhook.");
+  }
+
+  for (const action of actions) {
+    if (!RULE_ACTIONS.has(action.type)) throw new Error("Une action de règle est invalide.");
+    if ((action.type === "move_to_folder" || action.type === "webhook") && !action.value) {
+      throw new Error("La cible de l’action est obligatoire.");
+    }
+    if (action.type === "webhook") {
+      let webhookUrl;
+      try {
+        webhookUrl = new URL(action.value);
+      } catch {
+        throw new Error("URL webhook invalide.");
+      }
+      if (!["http:", "https:"].includes(webhookUrl.protocol)) {
+        throw new Error("Le webhook doit utiliser HTTP ou HTTPS.");
+      }
+    }
+  }
+
+  return {
+    conditions,
+    actions,
+    matchMode: rule.matchMode === "any" || rule.match_mode === "any" ? "any" : "all",
+    priority: Math.max(0, Math.min(9999, Math.round(Number(rule.priority ?? 100) || 100))),
+    stopProcessing: Boolean(rule.stopProcessing ?? rule.stop_processing),
+  };
+}
+
 function rowToRule(row) {
   if (!row) return null;
+  const normalized = validateRuleParts(row);
   return {
     id: row.id,
     name: row.name,
-    field: row.field,
-    operator: row.operator,
-    value: row.value,
-    action: row.action,
-    actionValue: row.action_value || "",
+    field: normalized.conditions[0].field,
+    operator: normalized.conditions[0].operator,
+    value: normalized.conditions[0].value,
+    action: normalized.actions[0].type,
+    actionValue: normalized.actions[0].value || "",
+    conditions: normalized.conditions,
+    actions: normalized.actions,
+    matchMode: normalized.matchMode,
+    priority: normalized.priority,
+    stopProcessing: normalized.stopProcessing,
     enabled: Boolean(row.enabled),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -579,30 +752,27 @@ function rowToRule(row) {
 }
 
 function listRules() {
-  return getDb().prepare("SELECT * FROM mail_rules WHERE is_deleted = 0 ORDER BY datetime(created_at) ASC").all().map(rowToRule);
+  return getDb().prepare("SELECT * FROM mail_rules WHERE is_deleted = 0 ORDER BY priority ASC, datetime(created_at) ASC").all().map(rowToRule);
 }
 
 function saveRule(rule = {}) {
-  const allowedFields = new Set(["from", "subject", "to"]);
-  const allowedOperators = new Set(["contains", "equals", "ends_with"]);
-  const allowedActions = new Set(["archive", "star", "read", "trash", "move_to_folder"]);
-  const field = String(rule.field || "");
-  const operator = String(rule.operator || "");
-  const action = String(rule.action || "");
-  const value = String(rule.value || "").trim();
-  const actionValue = String(rule.actionValue || "").trim();
-  if (!allowedFields.has(field) || !allowedOperators.has(operator) || !allowedActions.has(action) || !value || (action === "move_to_folder" && !actionValue)) {
-    throw new Error("Règle invalide.");
-  }
+  const normalized = validateRuleParts(rule);
+  const firstCondition = normalized.conditions[0];
+  const firstAction = normalized.actions[0];
   const db = getDb();
   const id = String(rule.id || randomUUID());
   const now = new Date().toISOString();
   const existing = db.prepare("SELECT created_at FROM mail_rules WHERE id = ?").get(id);
-  const fieldLabel = field === "from" ? "Expéditeur" : field === "subject" ? "Objet" : "Destinataire";
-  const operatorLabel = operator === "contains" ? "contient" : operator === "equals" ? "est" : "se termine par";
+  const fieldLabel = firstCondition.field === "from" ? "Expéditeur" : firstCondition.field === "subject" ? "Objet" : "Destinataire";
+  const operatorLabel = firstCondition.operator === "contains" ? "contient" : firstCondition.operator === "equals" ? "est" : "se termine par";
+
   db.prepare(`
-    INSERT INTO mail_rules (id, name, field, operator, value, action, action_value, enabled, is_deleted, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    INSERT INTO mail_rules (
+      id, name, field, operator, value, action, action_value,
+      conditions_json, actions_json, match_mode, priority, stop_processing,
+      enabled, is_deleted, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       field = excluded.field,
@@ -610,79 +780,290 @@ function saveRule(rule = {}) {
       value = excluded.value,
       action = excluded.action,
       action_value = excluded.action_value,
+      conditions_json = excluded.conditions_json,
+      actions_json = excluded.actions_json,
+      match_mode = excluded.match_mode,
+      priority = excluded.priority,
+      stop_processing = excluded.stop_processing,
       enabled = excluded.enabled,
       is_deleted = 0,
       updated_at = excluded.updated_at
   `).run(
     id,
-    String(rule.name || "").trim() || `${fieldLabel} ${operatorLabel} ${value}`,
-    field,
-    operator,
-    value,
-    action,
-    actionValue || null,
+    String(rule.name || "").trim() || `${fieldLabel} ${operatorLabel} ${firstCondition.value}`,
+    firstCondition.field,
+    firstCondition.operator,
+    firstCondition.value,
+    firstAction.type,
+    firstAction.value || null,
+    json(normalized.conditions),
+    json(normalized.actions),
+    normalized.matchMode,
+    normalized.priority,
+    Number(normalized.stopProcessing),
     Number(rule.enabled !== false),
     existing?.created_at || now,
     now,
   );
+
+  db.prepare("DELETE FROM rule_webhook_outbox WHERE rule_id = ? AND status <> 'delivered'").run(id);
   return rowToRule(db.prepare("SELECT * FROM mail_rules WHERE id = ?").get(id));
 }
 
 function deleteRule(id) {
-  getDb().prepare("UPDATE mail_rules SET is_deleted = 1, updated_at = ? WHERE id = ?")
-    .run(new Date().toISOString(), String(id));
+  const db = getDb();
+  const ruleId = String(id);
+  db.prepare("UPDATE mail_rules SET is_deleted = 1, updated_at = ? WHERE id = ?")
+    .run(new Date().toISOString(), ruleId);
+  db.prepare("DELETE FROM rule_webhook_outbox WHERE rule_id = ? AND status <> 'delivered'").run(ruleId);
   return true;
 }
 
-function ruleMatches(rule, row) {
-  const right = String(rule.value || "").trim().toLowerCase();
-  let values = [];
-
-  if (rule.field === "subject") {
-    values = [String(row.subject || "").trim().toLowerCase()];
-  } else if (rule.field === "from") {
+function valuesForRuleField(field, row) {
+  if (field === "subject") {
+    return [String(row.subject || "").trim().toLowerCase()];
+  }
+  if (field === "from") {
     const raw = String(row.from_addr || "").trim().toLowerCase();
     const email = parseContactAddress(row.from_addr)?.email || "";
-    values = [...new Set([raw, email].filter(Boolean))];
-  } else {
-    const addresses = [
-      ...parse(row.to_json),
-      ...parse(row.cc_json),
-      ...parse(row.bcc_json),
-    ];
-    values = addresses.flatMap((address) => {
-      const raw = String(address || "").trim().toLowerCase();
-      const email = parseContactAddress(address)?.email || "";
-      return [...new Set([raw, email].filter(Boolean))];
-    });
+    return [...new Set([raw, email].filter(Boolean))];
   }
 
-  if (rule.operator === "equals") return values.some((value) => value === right);
-  if (rule.operator === "ends_with") return values.some((value) => value.endsWith(right));
+  const addresses = [
+    ...parse(row.to_json),
+    ...parse(row.cc_json),
+    ...parse(row.bcc_json),
+  ];
+  return addresses.flatMap((address) => {
+    const raw = String(address || "").trim().toLowerCase();
+    const email = parseContactAddress(address)?.email || "";
+    return [...new Set([raw, email].filter(Boolean))];
+  });
+}
+
+function ruleConditionMatches(condition, row) {
+  const right = String(condition.value || "").trim().toLowerCase();
+  const values = valuesForRuleField(condition.field, row);
+  if (condition.operator === "equals") return values.some((value) => value === right);
+  if (condition.operator === "ends_with") return values.some((value) => value.endsWith(right));
   return values.some((value) => value.includes(right));
+}
+
+function ruleMatches(rule, row) {
+  const normalized = validateRuleParts(rule);
+  const results = normalized.conditions.map((condition) => ruleConditionMatches(condition, row));
+  return normalized.matchMode === "any" ? results.some(Boolean) : results.every(Boolean);
+}
+
+function recordRuleRun(db, rule, row, actions, status = "matched", detail = "") {
+  db.prepare(`
+    INSERT INTO rule_run_log (id, rule_id, message_id, rule_name, actions_json, status, detail, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    randomUUID(),
+    String(rule.id),
+    String(row.id),
+    String(rule.name || "Règle"),
+    json(actions),
+    String(status),
+    String(detail || "").slice(0, 2000),
+    new Date().toISOString(),
+  );
+  db.prepare(`
+    DELETE FROM rule_run_log
+    WHERE id IN (
+      SELECT id FROM rule_run_log
+      ORDER BY datetime(created_at) DESC
+      LIMIT -1 OFFSET 2000
+    )
+  `).run();
+}
+
+function listRuleRuns(ruleId = "", limit = 100) {
+  const bounded = Math.max(1, Math.min(Number(limit) || 100, 500));
+  const db = getDb();
+  const rows = ruleId
+    ? db.prepare("SELECT * FROM rule_run_log WHERE rule_id = ? ORDER BY datetime(created_at) DESC LIMIT ?").all(String(ruleId), bounded)
+    : db.prepare("SELECT * FROM rule_run_log ORDER BY datetime(created_at) DESC LIMIT ?").all(bounded);
+  return rows.map((row) => ({
+    id: row.id,
+    ruleId: row.rule_id,
+    messageId: row.message_id,
+    ruleName: row.rule_name,
+    actions: parse(row.actions_json),
+    status: row.status,
+    detail: row.detail || "",
+    createdAt: row.created_at,
+  }));
+}
+
+function testRuleOnInbox(rule = {}, limit = 5) {
+  const normalized = validateRuleParts(rule);
+  const candidate = {
+    ...rule,
+    conditions: normalized.conditions,
+    actions: normalized.actions,
+    matchMode: normalized.matchMode,
+  };
+  const rows = getDb().prepare(`
+    SELECT id, created_at, from_addr, to_json, cc_json, bcc_json, subject, message_id, text_body, html, attachments_json
+    FROM messages
+    WHERE direction = 'inbound' AND is_deleted = 0
+    ORDER BY datetime(created_at) DESC
+  `).all();
+  const matches = rows.filter((row) => ruleMatches(candidate, row));
+  return {
+    matched: matches.length,
+    samples: matches.slice(0, Math.max(1, Math.min(Number(limit) || 5, 20))).map((row) => ({
+      id: row.id,
+      from: row.from_addr || "",
+      subject: row.subject || "(Sans objet)",
+      createdAt: row.created_at || "",
+    })),
+  };
+}
+
+function queueRuleWebhook(db, rule, row, action) {
+  const url = String(action?.value || "").trim();
+  if (!url) return false;
+
+  const now = new Date().toISOString();
+  const normalized = validateRuleParts(rule);
+  const payload = {
+    event: "maildesk.rule.matched",
+    triggeredAt: now,
+    rule: {
+      id: rule.id,
+      name: rule.name,
+      matchMode: normalized.matchMode,
+      conditions: normalized.conditions,
+      priority: normalized.priority,
+    },
+    message: {
+      id: row.id,
+      createdAt: row.created_at || null,
+      from: row.from_addr || "",
+      to: parse(row.to_json),
+      cc: parse(row.cc_json),
+      bcc: parse(row.bcc_json),
+      subject: row.subject || "",
+      messageId: row.message_id || "",
+      text: row.text_body || "",
+      html: row.html || "",
+      attachments: attachmentMetadata(parse(row.attachments_json)),
+    },
+  };
+
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO rule_webhook_outbox (
+      id, rule_id, message_id, url, payload_json, status, attempts, last_error, next_attempt_at, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, 'pending', 0, '', NULL, ?, ?)
+  `).run(randomUUID(), String(rule.id), String(row.id), url, json(payload, {}), now, now);
+
+  return Number(result.changes || 0) > 0;
+}
+
+function getDueRuleWebhooks(limit = 10) {
+  const now = new Date().toISOString();
+  return getDb().prepare(`
+    SELECT id, rule_id, message_id, url, payload_json, attempts, last_error, next_attempt_at, created_at, updated_at
+    FROM rule_webhook_outbox
+    WHERE status IN ('pending', 'failed')
+      AND (next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime(?))
+    ORDER BY datetime(created_at) ASC
+    LIMIT ?
+  `).all(now, Math.max(1, Math.min(Number(limit) || 10, 50))).map((row) => ({
+    id: row.id,
+    ruleId: row.rule_id,
+    messageId: row.message_id,
+    url: row.url,
+    payloadJson: row.payload_json,
+    attempts: Number(row.attempts || 0),
+    lastError: row.last_error || "",
+    nextAttemptAt: row.next_attempt_at || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+function markRuleWebhookDelivered(id) {
+  getDb().prepare(`
+    UPDATE rule_webhook_outbox
+    SET status = 'delivered', attempts = attempts + 1, last_error = '', next_attempt_at = NULL, updated_at = ?
+    WHERE id = ?
+  `).run(new Date().toISOString(), String(id));
+  return true;
+}
+
+function markRuleWebhookFailed(id, error, delaySeconds = 60) {
+  const now = new Date();
+  const next = new Date(now.getTime() + Math.max(30, Number(delaySeconds) || 60) * 1000).toISOString();
+  getDb().prepare(`
+    UPDATE rule_webhook_outbox
+    SET status = 'failed', attempts = attempts + 1, last_error = ?, next_attempt_at = ?, updated_at = ?
+    WHERE id = ?
+  `).run(String(error || "Erreur webhook").slice(0, 2000), next, now.toISOString(), String(id));
+  return true;
 }
 
 function applyRulesToMessage(db, id) {
   const row = db.prepare("SELECT * FROM messages WHERE id = ? AND direction = 'inbound'").get(String(id));
   if (!row) return false;
-  const rules = db.prepare("SELECT * FROM mail_rules WHERE enabled = 1 AND is_deleted = 0 ORDER BY datetime(created_at) ASC").all();
-  let changed = false;
+
+  const rules = db.prepare(`
+    SELECT * FROM mail_rules
+    WHERE enabled = 1 AND is_deleted = 0
+    ORDER BY priority ASC, datetime(created_at) ASC
+  `).all();
+  let matched = false;
+  let stateChanged = false;
+
   for (const rule of rules) {
     if (!ruleMatches(rule, row)) continue;
-    if (rule.action === "archive") row.folder = "archive";
-    if (rule.action === "trash") row.folder = "trash";
-    if (rule.action === "star") row.is_starred = 1;
-    if (rule.action === "read") row.is_read = 1;
-    if (rule.action === "move_to_folder" && rule.action_value) row.folder = `custom:${rule.action_value}`;
-    changed = true;
+    matched = true;
+
+    const normalized = validateRuleParts(rule);
+    const executed = [];
+    for (const action of normalized.actions) {
+      if (action.type === "archive") {
+        row.folder = "archive";
+        stateChanged = true;
+        executed.push({ type: action.type });
+      } else if (action.type === "trash") {
+        row.folder = "trash";
+        stateChanged = true;
+        executed.push({ type: action.type });
+      } else if (action.type === "star") {
+        row.is_starred = 1;
+        stateChanged = true;
+        executed.push({ type: action.type });
+      } else if (action.type === "read") {
+        row.is_read = 1;
+        stateChanged = true;
+        executed.push({ type: action.type });
+      } else if (action.type === "move_to_folder" && action.value) {
+        row.folder = `custom:${action.value}`;
+        stateChanged = true;
+        executed.push({ type: action.type, value: action.value });
+      } else if (action.type === "webhook") {
+        const queued = queueRuleWebhook(db, rule, row, action);
+        executed.push({ type: action.type, value: action.value, queued });
+      }
+    }
+
+    recordRuleRun(db, rule, row, executed);
+    if (normalized.stopProcessing) break;
   }
-  if (!changed) return false;
-  db.prepare(`
-    UPDATE messages
-    SET folder = ?, is_read = ?, is_starred = ?, updated_at = ?, synced_at = NULL
-    WHERE id = ?
-  `).run(row.folder, row.is_read, row.is_starred, new Date().toISOString(), String(id));
-  return true;
+
+  if (stateChanged) {
+    db.prepare(`
+      UPDATE messages
+      SET folder = ?, is_read = ?, is_starred = ?, updated_at = ?, synced_at = NULL
+      WHERE id = ?
+    `).run(row.folder, row.is_read, row.is_starred, new Date().toISOString(), String(id));
+  }
+  return matched;
 }
 
 function runRulesOnInbox() {
@@ -754,7 +1135,7 @@ function rowToMail(row) {
     references: parse(row.references_json),
     html: row.html,
     text: row.text_body,
-    attachments: parse(row.attachments_json),
+    attachments: attachmentMetadata(parse(row.attachments_json)),
     localFolder: row.folder,
     localRead: Boolean(row.is_read),
     localStarred: Boolean(row.is_starred),
@@ -952,7 +1333,7 @@ function upsertMail(mail, direction) {
     json(threading.references),
     mail.html ?? null,
     mail.text ?? null,
-    json(mail.attachments),
+    json(attachmentMetadata(mail.attachments)),
     json(mail, {}),
     folder,
     isRead,
@@ -1047,8 +1428,12 @@ function getSnapshot() {
   };
 }
 
-function exportRows() {
-  return getDb().prepare("SELECT * FROM messages").all().map((row) => ({
+function exportRows(options = {}) {
+  const dirtyOnly = Boolean(options?.dirtyOnly);
+  const rows = dirtyOnly
+    ? getDb().prepare("SELECT * FROM messages WHERE synced_at IS NULL OR datetime(updated_at) > datetime(synced_at)").all()
+    : getDb().prepare("SELECT * FROM messages").all();
+  return rows.map((row) => ({
     id: row.id,
     direction: row.direction,
     created_at: row.created_at,
@@ -1064,7 +1449,7 @@ function exportRows() {
     references_json: parse(row.references_json),
     html: row.html,
     text_body: row.text_body,
-    attachments_json: parse(row.attachments_json),
+    attachments_json: attachmentMetadata(parse(row.attachments_json)),
     folder: row.folder,
     is_read: Boolean(row.is_read),
     is_starred: Boolean(row.is_starred),
@@ -1137,7 +1522,7 @@ function mergeRemoteRows(rows) {
         json(row.references_json),
         row.html ?? null,
         row.text_body ?? null,
-        json(row.attachments_json),
+        json(attachmentMetadata(row.attachments_json)),
         row.folder || (row.direction === "outbound" ? "sent" : "inbox"),
         Number(Boolean(row.is_read)),
         Number(Boolean(row.is_starred)),
@@ -1159,8 +1544,37 @@ function mergeRemoteRows(rows) {
   return getSnapshot();
 }
 
-function markSynced() {
-  getDb().prepare("UPDATE messages SET synced_at = ?").run(new Date().toISOString());
+function markSynced(ids = []) {
+  const db = getDb();
+  const now = new Date().toISOString();
+  const normalizedIds = [...new Set((Array.isArray(ids) ? ids : []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!normalizedIds.length) {
+    db.prepare("UPDATE messages SET synced_at = ? WHERE synced_at IS NULL OR datetime(updated_at) > datetime(synced_at)").run(now);
+    return;
+  }
+  const update = db.prepare("UPDATE messages SET synced_at = ? WHERE id = ?");
+  db.exec("BEGIN");
+  try {
+    normalizedIds.forEach((id) => update.run(now, id));
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function getSyncState(key) {
+  return String(getDb().prepare("SELECT value FROM sync_state WHERE key = ?").get(String(key || ""))?.value || "");
+}
+
+function setSyncState(key, value) {
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO sync_state (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(String(key || ""), String(value || ""), now);
+  return String(value || "");
 }
 
 function exportContacts() {
@@ -1499,28 +1913,48 @@ function mergeRemoteCalendarEvents(rows) {
   return listCalendarEvents();
 }
 
-function exportRules() {
-  return getDb().prepare("SELECT * FROM mail_rules").all().map((row) => ({
-    id: row.id,
-    name: row.name,
-    field: row.field,
-    operator: row.operator,
-    value: row.value,
-    action: row.action,
-    action_value: row.action_value || null,
-    enabled: Boolean(row.enabled),
-    is_deleted: Boolean(row.is_deleted),
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  }));
+function exportRules(options = {}) {
+  const legacyOnly = Boolean(options?.legacyOnly);
+  // Les règles contenant un webhook restent locales : leur URL peut être sensible.
+  return getDb().prepare("SELECT * FROM mail_rules").all()
+    .filter((row) => !normalizeRuleActions(row).some((action) => action.type === "webhook"))
+    .map((row) => {
+      const normalized = validateRuleParts(row);
+      const base = {
+        id: row.id,
+        name: row.name,
+        field: normalized.conditions[0].field,
+        operator: normalized.conditions[0].operator,
+        value: normalized.conditions[0].value,
+        action: normalized.actions[0].type,
+        action_value: normalized.actions[0].value || null,
+        enabled: Boolean(row.enabled),
+        is_deleted: Boolean(row.is_deleted),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      };
+      if (legacyOnly) return base;
+      return {
+        ...base,
+        conditions_json: normalized.conditions,
+        actions_json: normalized.actions,
+        match_mode: normalized.matchMode,
+        priority: normalized.priority,
+        stop_processing: normalized.stopProcessing,
+      };
+    });
 }
 
 function mergeRemoteRules(rows) {
   const db = getDb();
   const select = db.prepare("SELECT updated_at FROM mail_rules WHERE id = ?");
   const upsert = db.prepare(`
-    INSERT INTO mail_rules (id, name, field, operator, value, action, action_value, enabled, is_deleted, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO mail_rules (
+      id, name, field, operator, value, action, action_value,
+      conditions_json, actions_json, match_mode, priority, stop_processing,
+      enabled, is_deleted, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       field = excluded.field,
@@ -1528,6 +1962,11 @@ function mergeRemoteRules(rows) {
       value = excluded.value,
       action = excluded.action,
       action_value = excluded.action_value,
+      conditions_json = excluded.conditions_json,
+      actions_json = excluded.actions_json,
+      match_mode = excluded.match_mode,
+      priority = excluded.priority,
+      stop_processing = excluded.stop_processing,
       enabled = excluded.enabled,
       is_deleted = excluded.is_deleted,
       created_at = excluded.created_at,
@@ -1540,14 +1979,20 @@ function mergeRemoteRules(rows) {
       if (!row?.id || !row?.updated_at) continue;
       const local = select.get(String(row.id));
       if (local?.updated_at && new Date(local.updated_at).getTime() >= new Date(row.updated_at).getTime()) continue;
+      const normalized = validateRuleParts(row);
       upsert.run(
         String(row.id),
         String(row.name || "Règle"),
-        String(row.field),
-        String(row.operator),
-        String(row.value || ""),
-        String(row.action),
-        row.action_value ? String(row.action_value) : null,
+        normalized.conditions[0].field,
+        normalized.conditions[0].operator,
+        normalized.conditions[0].value,
+        normalized.actions[0].type,
+        normalized.actions[0].value || null,
+        json(normalized.conditions),
+        json(normalized.actions),
+        normalized.matchMode,
+        normalized.priority,
+        Number(normalized.stopProcessing),
         Number(row.enabled !== false),
         Number(Boolean(row.is_deleted)),
         row.created_at || row.updated_at,
@@ -1882,19 +2327,24 @@ module.exports = {
   getActiveDraft,
   getDraft,
   getDueOutbox,
+  getDueRuleWebhooks,
   getLocalMail,
   getNextOutboxAttemptAt,
   getSnapshot,
+  getSyncState,
   listBlockedSenders,
   listCalendarEvents,
   listContacts,
   listCustomFolders,
   listDrafts,
   listOutbox,
+  listRuleRuns,
   listRules,
   listTemplates,
   markOutboxFailed,
   markOutboxSending,
+  markRuleWebhookDelivered,
+  markRuleWebhookFailed,
   markSynced,
   mergeRemoteCalendarEvents,
   mergeRemoteContacts,
@@ -1907,6 +2357,7 @@ module.exports = {
   restoreDatabaseBackup,
   retryOutbox,
   runRulesOnInbox,
+  testRuleOnInbox,
   saveActiveDraft,
   saveCalendarEvent,
   saveContact,
@@ -1916,6 +2367,7 @@ module.exports = {
   saveTemplate,
   searchContacts,
   searchLocalMessages,
+  setSyncState,
   unblockSender,
   updateState,
   upsertMail,

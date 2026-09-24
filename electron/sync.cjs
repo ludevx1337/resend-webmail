@@ -5,6 +5,7 @@ const {
   exportRows,
   exportRules,
   exportTemplates,
+  getSyncState,
   markSynced,
   mergeRemoteCalendarEvents,
   mergeRemoteContacts,
@@ -12,6 +13,7 @@ const {
   mergeRemoteRows,
   mergeRemoteRules,
   mergeRemoteTemplates,
+  setSyncState,
 } = require("./db.cjs");
 
 const TABLES = {
@@ -54,8 +56,33 @@ async function failure(response, table) {
   return new Error(`Synchronisation Supabase impossible (${response.status})${detail ? ` : ${detail}` : ""}`);
 }
 
-async function pullTable(url, key, table, optional = false) {
-  const response = await fetch(`${url}/rest/v1/${table}?select=*`, {
+function overlapCursor(value, overlapMs = 2 * 60 * 1000) {
+  if (!value) return "";
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "";
+  return new Date(Math.max(0, timestamp - overlapMs)).toISOString();
+}
+
+function latestTimestamp(rows, previous = "") {
+  let latest = previous || "";
+  let latestTime = latest ? new Date(latest).getTime() : 0;
+  for (const row of rows || []) {
+    const candidate = String(row?.updated_at || "");
+    const time = candidate ? new Date(candidate).getTime() : 0;
+    if (Number.isFinite(time) && time > latestTime) {
+      latest = candidate;
+      latestTime = time;
+    }
+  }
+  return latest;
+}
+
+async function pullTable(url, key, table, optional = false, options = {}) {
+  const query = new URLSearchParams({ select: "*" });
+  if (options.updatedAfter) query.set("updated_at", `gt.${options.updatedAfter}`);
+  if (options.orderByUpdatedAt) query.set("order", "updated_at.asc");
+
+  const response = await fetch(`${url}/rest/v1/${table}?${query.toString()}`, {
     headers: headers(key, { Accept: "application/json" }),
   });
 
@@ -65,6 +92,19 @@ async function pullTable(url, key, table, optional = false) {
   if (!response.ok) throw await failure(response, table);
   const rows = await response.json();
   return { available: true, rows: Array.isArray(rows) ? rows : [] };
+}
+
+async function supportsColumns(url, key, table, columns) {
+  const query = new URLSearchParams({
+    select: ["id", ...columns].join(","),
+    limit: "1",
+  });
+  const response = await fetch(`${url}/rest/v1/${table}?${query.toString()}`, {
+    headers: headers(key, { Accept: "application/json" }),
+  });
+  if (response.status === 400 || response.status === 404) return false;
+  if (!response.ok) throw await failure(response, table);
+  return true;
 }
 
 async function pushTable(url, key, table, rows) {
@@ -80,14 +120,37 @@ async function pushTable(url, key, table, rows) {
   if (!response.ok) throw await failure(response, table);
 }
 
-async function syncWithSupabase(settings) {
+function changedRows(localRows, remoteRows, keyField = "id") {
+  const remoteByKey = new Map(
+    (remoteRows || [])
+      .filter((row) => row?.[keyField] != null)
+      .map((row) => [String(row[keyField]), row]),
+  );
+
+  return (localRows || []).filter((row) => {
+    const key = String(row?.[keyField] ?? "");
+    if (!key) return false;
+    const remote = remoteByKey.get(key);
+    if (!remote) return true;
+    const localTime = new Date(row.updated_at || 0).getTime();
+    const remoteTime = new Date(remote.updated_at || 0).getTime();
+    return Number.isFinite(localTime) && (!Number.isFinite(remoteTime) || localTime > remoteTime);
+  });
+}
+
+async function performSyncWithSupabase(settings) {
   const url = String(settings?.supabaseUrl || "").replace(/\/$/, "");
   const key = String(settings?.supabaseKey || "").trim();
   if (!url || !key) {
     return { configured: false, ok: true, mode: "local-only", message: "Base locale active" };
   }
 
-  const remoteMessages = await pullTable(url, key, TABLES.messages);
+  const messageCursorKey = `supabase:${TABLES.messages}:updated_at`;
+  const previousMessageCursor = getSyncState(messageCursorKey);
+  const remoteMessages = await pullTable(url, key, TABLES.messages, false, {
+    updatedAfter: overlapCursor(previousMessageCursor),
+    orderByUpdatedAt: true,
+  });
   mergeRemoteRows(remoteMessages.rows);
 
   const [remoteContacts, remoteFolders, remoteRules, remoteTemplates, remoteCalendar] = await Promise.all([
@@ -104,38 +167,78 @@ async function syncWithSupabase(settings) {
   if (remoteTemplates.available) mergeRemoteTemplates(remoteTemplates.rows);
   if (remoteCalendar.available) mergeRemoteCalendarEvents(remoteCalendar.rows);
 
-  const localMessages = exportRows();
+  // Messages: only local rows changed since their last successful push.
+  const dirtyMessages = exportRows({ dirtyOnly: true });
+  await pushTable(url, key, TABLES.messages, dirtyMessages);
+  if (dirtyMessages.length) markSynced(dirtyMessages.map((row) => row.id));
+
+  const nextMessageCursor = latestTimestamp(remoteMessages.rows, previousMessageCursor);
+  if (nextMessageCursor) setSyncState(messageCursorKey, nextMessageCursor);
+
   const localContacts = exportContacts();
   const localFolders = exportCustomFolders();
-  const localRules = exportRules();
   const localTemplates = exportTemplates();
   const localCalendar = exportCalendarEvents();
 
-  await pushTable(url, key, TABLES.messages, localMessages);
-  if (remoteContacts.available) await pushTable(url, key, TABLES.contacts, localContacts);
-  if (remoteFolders.available) await pushTable(url, key, TABLES.folders, localFolders);
-  if (remoteRules.available) await pushTable(url, key, TABLES.rules, localRules);
-  if (remoteTemplates.available) await pushTable(url, key, TABLES.templates, localTemplates);
-  if (remoteCalendar.available) await pushTable(url, key, TABLES.calendar, localCalendar);
+  const contactsToPush = remoteContacts.available ? changedRows(localContacts, remoteContacts.rows, "email") : [];
+  const foldersToPush = remoteFolders.available ? changedRows(localFolders, remoteFolders.rows) : [];
+  const templatesToPush = remoteTemplates.available ? changedRows(localTemplates, remoteTemplates.rows) : [];
+  const calendarToPush = remoteCalendar.available ? changedRows(localCalendar, remoteCalendar.rows) : [];
 
-  markSynced();
+  if (remoteContacts.available) await pushTable(url, key, TABLES.contacts, contactsToPush);
+  if (remoteFolders.available) await pushTable(url, key, TABLES.folders, foldersToPush);
+  if (remoteTemplates.available) await pushTable(url, key, TABLES.templates, templatesToPush);
+  if (remoteCalendar.available) await pushTable(url, key, TABLES.calendar, calendarToPush);
+
+  let ruleSchemaV2 = false;
+  let localRules = [];
+  let rulesToPush = [];
+  if (remoteRules.available) {
+    ruleSchemaV2 = await supportsColumns(url, key, TABLES.rules, [
+      "conditions_json",
+      "actions_json",
+      "match_mode",
+      "priority",
+      "stop_processing",
+    ]);
+    localRules = exportRules({ legacyOnly: !ruleSchemaV2 });
+    rulesToPush = changedRows(localRules, remoteRules.rows);
+    await pushTable(url, key, TABLES.rules, rulesToPush);
+  }
 
   const extrasReady = remoteContacts.available && remoteFolders.available && remoteRules.available
     && remoteTemplates.available && remoteCalendar.available;
+  const message = !extrasReady
+    ? "Mails synchronisés en mode différentiel. Utilisez « Créer / réparer les tables » pour activer la synchro complète."
+    : remoteRules.available && !ruleSchemaV2
+      ? "Synchronisation différentielle active. Les règles simples sont synchronisées ; réparez les tables Supabase pour synchroniser les règles V2."
+      : "Synchronisation différentielle active : seuls les éléments modifiés sont envoyés vers Supabase.";
+
   return {
     configured: true,
     ok: true,
-    mode: "local+supabase",
-    rows: localMessages.length,
-    contacts: localContacts.length,
-    folders: localFolders.length,
-    rules: localRules.length,
-    templates: localTemplates.length,
-    calendarEvents: localCalendar.length,
-    message: extrasReady
-      ? "Base locale, contacts, dossiers, règles, modèles et calendrier synchronisés avec Supabase"
-      : "Mails synchronisés avec Supabase. Utilisez « Créer / réparer les tables » pour activer la synchro complète.",
+    mode: "local+supabase-delta",
+    rows: dirtyMessages.length,
+    pulledRows: remoteMessages.rows.length,
+    contacts: contactsToPush.length,
+    folders: foldersToPush.length,
+    rules: rulesToPush.length,
+    templates: templatesToPush.length,
+    calendarEvents: calendarToPush.length,
+    message,
   };
+}
+
+let activeSync = null;
+
+async function syncWithSupabase(settings) {
+  if (activeSync) return activeSync;
+  activeSync = performSyncWithSupabase(settings);
+  try {
+    return await activeSync;
+  } finally {
+    activeSync = null;
+  }
 }
 
 module.exports = { syncWithSupabase };

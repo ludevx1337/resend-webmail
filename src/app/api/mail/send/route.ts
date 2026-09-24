@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authorizeMailRequest } from "@/lib/mail-request-auth";
 import { getDefaultFrom, getResend } from "@/lib/resend";
 
 type SendBody = {
@@ -26,7 +27,33 @@ function splitAddresses(value?: string) {
     .filter(Boolean);
 }
 
+function extractInlineImages(html?: string) {
+  const attachments: Array<{ filename: string; content: string; contentType: string; contentId: string }> = [];
+  if (!html?.trim()) return { html: html?.trim() || undefined, attachments };
+
+  let index = 0;
+  const nextHtml = html.replace(
+    /src=(["'])data:(image\/[a-z0-9.+-]+);base64,([^"']+)\1/gi,
+    (_match, quote: string, contentType: string, content: string) => {
+      index += 1;
+      const subtype = contentType.split("/")[1]?.replace(/[^a-z0-9]+/gi, "") || "png";
+      const contentId = `maildesk-signature-${index}@local`;
+      attachments.push({
+        filename: `signature-${index}.${subtype}`,
+        content,
+        contentType,
+        contentId,
+      });
+      return `src=${quote}cid:${contentId}${quote}`;
+    },
+  );
+
+  return { html: nextHtml.trim() || undefined, attachments };
+}
+
 export async function POST(request: NextRequest) {
+  const auth = await authorizeMailRequest(request);
+  if (!auth.ok) return auth.response;
   try {
     const body = (await request.json()) as SendBody;
     const to = splitAddresses(body.to);
@@ -34,13 +61,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "At least one recipient is required" }, { status: 400 });
     }
 
-    const attachments = (body.attachments ?? [])
-      .filter((item) => item.name && item.content)
-      .map((item) => ({
-        filename: item.name,
-        content: item.content,
-        contentType: item.type || undefined,
-      }));
+    const inline = extractInlineImages(body.html);
+    const attachments = [
+      ...(body.attachments ?? [])
+        .filter((item) => item.name && item.content)
+        .map((item) => ({
+          filename: item.name,
+          content: item.content,
+          contentType: item.type || undefined,
+        })),
+      ...inline.attachments,
+    ];
 
     const resend = getResend();
     const references = [...new Set([
@@ -63,7 +94,7 @@ export async function POST(request: NextRequest) {
         bcc: splitAddresses(body.bcc),
         subject: body.subject?.trim() || "(Sans objet)",
         text: body.text?.trim() || " ",
-        html: body.html?.trim() || undefined,
+        html: inline.html,
         headers,
         attachments,
       },

@@ -30,6 +30,7 @@ import {
   Pin,
   Plus,
   Printer,
+  QrCode,
   RefreshCw,
   Reply,
   ReplyAll,
@@ -47,8 +48,10 @@ import {
   X,
 } from "lucide-react";
 import Image from "next/image";
+import { QRCodeSVG } from "qrcode.react";
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { RichTextEditor } from "@/components/mail/rich-text-editor";
+import { SignatureEditor } from "@/components/mail/signature-editor";
 import { RecipientInput } from "@/components/mail/recipient-input";
 import { SecureMailFrame } from "@/components/mail/secure-mail-frame";
 
@@ -91,6 +94,7 @@ type InboundAttachment = {
   size?: number;
   content_type?: string;
   content_disposition?: string | null;
+  url?: string;
 };
 
 type MailDetail = MailItem & {
@@ -213,18 +217,66 @@ type CustomFolderEntry = {
   updatedAt: string;
 };
 
-type MailRuleEntry = {
+type MailRuleConditionEntry = {
   id: string;
-  name: string;
   field: "from" | "subject" | "to";
   operator: "contains" | "equals" | "ends_with";
   value: string;
-  action: "archive" | "star" | "read" | "trash" | "move_to_folder";
+};
+
+type MailRuleActionEntry = {
+  id: string;
+  type: "archive" | "star" | "read" | "trash" | "move_to_folder" | "webhook";
+  value?: string;
+};
+
+type MailRuleEntry = {
+  id: string;
+  name: string;
+  field: MailRuleConditionEntry["field"];
+  operator: MailRuleConditionEntry["operator"];
+  value: string;
+  action: MailRuleActionEntry["type"];
   actionValue?: string;
+  conditions: MailRuleConditionEntry[];
+  actions: MailRuleActionEntry[];
+  matchMode: "all" | "any";
+  priority: number;
+  stopProcessing: boolean;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
 };
+
+type MailRuleRunEntry = {
+  id: string;
+  ruleId: string;
+  messageId: string;
+  ruleName: string;
+  actions: Array<{ type: MailRuleActionEntry["type"]; value?: string; queued?: boolean }>;
+  status: string;
+  detail: string;
+  createdAt: string;
+};
+
+function ruleFieldLabel(field: MailRuleConditionEntry["field"]) {
+  return field === "from" ? "Expéditeur" : field === "subject" ? "Objet" : "Destinataire";
+}
+
+function ruleOperatorLabel(operator: MailRuleConditionEntry["operator"]) {
+  return operator === "contains" ? "contient" : operator === "equals" ? "est exactement" : "se termine par";
+}
+
+function ruleActionLabel(action: MailRuleActionEntry, folders: CustomFolderEntry[]) {
+  if (action.type === "archive") return "Archiver";
+  if (action.type === "star") return "Ajouter aux favoris";
+  if (action.type === "read") return "Marquer comme lu";
+  if (action.type === "trash") return "Corbeille";
+  if (action.type === "move_to_folder") {
+    return `Dossier « ${folders.find((folder) => folder.id === action.value)?.name || "introuvable"} »`;
+  }
+  return `Webhook → ${action.value || "URL manquante"}`;
+}
 
 const EMPTY_COMPOSE: ComposeState = {
   from: "",
@@ -345,7 +397,7 @@ function removeId(ids: string[], id: string) {
 
 function hasComposeContent(compose: ComposeState, signature = "") {
   const bodyText = compose.text.trim();
-  const signatureText = signature.trim();
+  const signatureText = signatureToText(signature).trim();
   const hasBody = Boolean(bodyText && bodyText !== signatureText);
 
   return Boolean(
@@ -514,10 +566,43 @@ function buildPrintableConversationDocument(messages: MailDetail[]) {
 </html>`;
 }
 
+function signatureToText(signature: string) {
+  const trimmed = signature.trim();
+  if (!trimmed) return "";
+  if (!/<[a-z][\s\S]*>/i.test(trimmed)) return trimmed;
+  return trimmed
+    .replace(/<br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/(?:p|div|li|tr|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeSignatureImageWidths(html: string) {
+  return html.replace(/<img\b([^>]*)>/gi, (tag, attrs: string) => {
+    if (/\swidth\s*=\s*["']?\d+/i.test(attrs)) return tag;
+    const styleMatch = attrs.match(/\sstyle\s*=\s*(["'])(.*?)\1/i);
+    const widthMatch = styleMatch?.[2]?.match(/(?:^|;)\s*width\s*:\s*(\d{1,4})px/i);
+    if (!widthMatch) return tag;
+    const width = Math.max(1, Math.min(1200, Number(widthMatch[1]) || 180));
+    return `<img${attrs} width="${width}">`;
+  });
+}
+
 function signatureToHtml(signature: string) {
   const trimmed = signature.trim();
   if (!trimmed) return "";
-  return `<p><br></p><p>${escapeHtml(trimmed).replace(/\n/g, "<br>")}</p>`;
+  if (/<[a-z][\s\S]*>/i.test(trimmed)) {
+    const safe = normalizeSignatureImageWidths(sanitizePrintableHtml(trimmed));
+    return `<div class="maildesk-signature"><p><br></p>${safe}</div>`;
+  }
+  return `<div class="maildesk-signature"><p><br></p><p>${escapeHtml(trimmed).replace(/\n/g, "<br>")}</p></div>`;
 }
 
 function defaultIdentityOf(identities: MailIdentity[], fallbackFrom = "", fallbackSignature = "") {
@@ -692,14 +777,23 @@ export default function Home() {
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [draggedFolderId, setDraggedFolderId] = useState("");
-  const [ruleFolderId, setRuleFolderId] = useState("");
   const [searchHelpOpen, setSearchHelpOpen] = useState(false);
+  const [messageMoreOpen, setMessageMoreOpen] = useState(false);
   const [blockedSenders, setBlockedSenders] = useState<Array<{ email: string; createdAt: string }>>([]);
   const [ruleName, setRuleName] = useState("");
-  const [ruleField, setRuleField] = useState<MailRuleEntry["field"]>("from");
-  const [ruleOperator, setRuleOperator] = useState<MailRuleEntry["operator"]>("contains");
-  const [ruleValue, setRuleValue] = useState("");
-  const [ruleAction, setRuleAction] = useState<MailRuleEntry["action"]>("archive");
+  const [ruleConditions, setRuleConditions] = useState<MailRuleConditionEntry[]>([
+    { id: "condition-1", field: "from", operator: "contains", value: "" },
+  ]);
+  const [ruleActions, setRuleActions] = useState<MailRuleActionEntry[]>([
+    { id: "action-1", type: "archive", value: "" },
+  ]);
+  const [ruleMatchMode, setRuleMatchMode] = useState<"all" | "any">("all");
+  const [rulePriority, setRulePriority] = useState(100);
+  const [ruleStopProcessing, setRuleStopProcessing] = useState(false);
+  const [ruleTestResult, setRuleTestResult] = useState<{ matched: number; samples: Array<{ id: string; from: string; subject: string; createdAt: string }> } | null>(null);
+  const [ruleRuns, setRuleRuns] = useState<MailRuleRunEntry[]>([]);
+  const [ruleFolderCreateActionId, setRuleFolderCreateActionId] = useState("");
+  const [ruleFolderCreateName, setRuleFolderCreateName] = useState("");
   const [identities, setIdentities] = useState<MailIdentity[]>([]);
   const [settingsIdentities, setSettingsIdentities] = useState<MailIdentity[]>([]);
   const [signature, setSignature] = useState("");
@@ -713,6 +807,13 @@ export default function Home() {
   const [settingsSupabaseManagementToken, setSettingsSupabaseManagementToken] = useState("");
   const [settingsHasSupabaseKey, setSettingsHasSupabaseKey] = useState(false);
   const [settingsHasSupabaseManagementToken, setSettingsHasSupabaseManagementToken] = useState(false);
+  const [mobileProvisioningQr, setMobileProvisioningQr] = useState("");
+  const [mobileProvisioningProjectRef, setMobileProvisioningProjectRef] = useState("");
+  const [mobileProvisioningConfigured, setMobileProvisioningConfigured] = useState(false);
+  const [mobileProvisioningReason, setMobileProvisioningReason] = useState("Configuration mobile incomplète.");
+  const [mobileQrDialogOpen, setMobileQrDialogOpen] = useState(false);
+  const [mobileQrDialogError, setMobileQrDialogError] = useState("");
+  const [generatingMobileQr, setGeneratingMobileQr] = useState(false);
   const [settingsAutoUpdateEnabled, setSettingsAutoUpdateEnabled] = useState(false);
   const [settingsUpdateManifestUrl, setSettingsUpdateManifestUrl] = useState("");
   const [updateStatusMessage, setUpdateStatusMessage] = useState("");
@@ -727,6 +828,8 @@ export default function Home() {
   const [databasePath, setDatabasePath] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [initializingSupabase, setInitializingSupabase] = useState(false);
+  const [deployingMobileEdge, setDeployingMobileEdge] = useState(false);
+  const [edgeDeployMessage, setEdgeDeployMessage] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const knownInboxIdsRef = useRef<Set<string> | null>(null);
@@ -737,6 +840,10 @@ export default function Home() {
     [...inbox, ...sent].forEach((mail) => byId.set(mail.id, mail));
     return [...byId.values()];
   }, [inbox, sent]);
+
+  const supabaseEdgeApiUrl = settingsSupabaseUrl.trim()
+    ? `${settingsSupabaseUrl.trim().replace(/\/$/, "")}/functions/v1/maildesk-api`
+    : "";
 
   const settingsSnapshots: SettingsBaseline = {
     account: JSON.stringify({
@@ -750,11 +857,11 @@ export default function Home() {
     appearance: JSON.stringify({ themeColor: normalizeThemeColor(settingsThemeColor) }),
     rules: JSON.stringify({
       name: ruleName,
-      field: ruleField,
-      operator: ruleOperator,
-      value: ruleValue,
-      action: ruleAction,
-      actionValue: ruleFolderId,
+      conditions: ruleConditions.map(({ field, operator, value }) => ({ field, operator, value })),
+      actions: ruleActions.map(({ type, value }) => ({ type, value: value || "" })),
+      matchMode: ruleMatchMode,
+      priority: rulePriority,
+      stopProcessing: ruleStopProcessing,
     }),
     templates: JSON.stringify({
       id: templateId,
@@ -835,13 +942,14 @@ export default function Home() {
       void (async () => {
         if (window.maildesk) {
           try {
-            const [snapshot, currentSettings, queued, storedDrafts, storedFolders, storedTemplates] = await Promise.all([
+            const [snapshot, currentSettings, queued, storedDrafts, storedFolders, storedTemplates, mobileStatus] = await Promise.all([
               window.maildesk.getLocalSnapshot(),
               window.maildesk.getSettings(),
               window.maildesk.getOutbox(),
               window.maildesk.listDrafts(),
               window.maildesk.listCustomFolders(),
               window.maildesk.listTemplates(),
+              window.maildesk.getMobileProvisioningStatus(),
             ]);
             const storedDraft = storedDrafts[0] || null;
             setInbox(snapshot.messages.filter((mail) => mail.direction !== "outbound") as MailItem[]);
@@ -868,6 +976,8 @@ export default function Home() {
             setThemeColor(normalizeThemeColor(currentSettings.themeColor || "#0f6cbd"));
             setSettingsThemeColor(normalizeThemeColor(currentSettings.themeColor || "#0f6cbd"));
             setDatabasePath(currentSettings.databasePath || "");
+            setMobileProvisioningConfigured(Boolean(mobileStatus.configured));
+            setMobileProvisioningReason(mobileStatus.reason || "QR mobile prêt.");
             if (storedDraft) {
               setCurrentDraftId(storedDraft.id);
               setCompose({
@@ -1029,17 +1139,6 @@ export default function Home() {
     }, 60_000);
     return () => window.clearInterval(timer);
   }, [snoozedIds.length]);
-
-  useEffect(() => {
-    const intervalMs = Math.max(5, Math.min(3600, refreshIntervalSeconds)) * 1000;
-    const timer = window.setInterval(() => {
-      if (document.hidden || !navigator.onLine || refreshRunningRef.current) return;
-      void refresh({ background: true });
-    }, intervalMs);
-    return () => window.clearInterval(timer);
-    // refresh is intentionally recreated with the current mailbox state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshIntervalSeconds]);
 
   useEffect(() => {
     if (!undoSend) return;
@@ -1205,14 +1304,11 @@ export default function Home() {
     void window.maildesk.syncNow();
   }
 
-  async function refresh(options: { background?: boolean } = {}) {
-    const background = Boolean(options.background);
+  async function refresh() {
     if (refreshRunningRef.current) return;
     refreshRunningRef.current = true;
-    if (!background) {
-      setLoading(true);
-      setError("");
-    }
+    setLoading(true);
+    setError("");
     try {
       const [inboxRes, sentRes] = await Promise.all([
         fetch("/api/mail/inbox", { cache: "no-store" }),
@@ -1225,19 +1321,6 @@ export default function Home() {
 
       const nextInbox = (inboxJson.emails ?? []) as MailItem[];
       const nextSent = (sentJson.emails ?? []) as MailItem[];
-      const previousIds = knownInboxIdsRef.current;
-      if (previousIds) {
-        const newMessages = nextInbox.filter((mail) => !previousIds.has(mail.id));
-        if (newMessages.length > 0 && window.maildesk) {
-          const latest = newMessages[0];
-          void window.maildesk.notifyNewMail({
-            id: latest.id,
-            count: newMessages.length,
-            title: senderName(latest.from),
-            body: latest.subject || "Nouveau message",
-          });
-        }
-      }
       knownInboxIdsRef.current = new Set(nextInbox.map((mail) => mail.id));
       setInbox(nextInbox);
       setSent(nextSent);
@@ -1250,12 +1333,12 @@ export default function Home() {
         setSent(mergeMailLists(nextSent, cachedSent));
         setReadIds(snapshot.readIds);
         setStarredIds(snapshot.starredIds);
-            setFlaggedIds(snapshot.flaggedIds ?? []);
-            setPinnedIds(snapshot.pinnedIds ?? []);
+        setFlaggedIds(snapshot.flaggedIds ?? []);
+        setPinnedIds(snapshot.pinnedIds ?? []);
         setArchivedIds(snapshot.archivedIds);
         setTrashedIds(snapshot.trashedIds);
-            setJunkIds(snapshot.junkIds ?? []);
-            setSnoozedIds(snapshot.snoozedIds ?? []);
+        setJunkIds(snapshot.junkIds ?? []);
+        setSnoozedIds(snapshot.snoozedIds ?? []);
         setDeletedIds(snapshot.deletedIds);
         void cacheMissingBodies(snapshot.missingBodyIds);
         void window.maildesk.syncNow().then(async () => {
@@ -1271,12 +1354,12 @@ export default function Home() {
           setSent(snapshot.messages.filter((mail) => mail.direction === "outbound") as MailItem[]);
           setReadIds(snapshot.readIds);
           setStarredIds(snapshot.starredIds);
-            setFlaggedIds(snapshot.flaggedIds ?? []);
-            setPinnedIds(snapshot.pinnedIds ?? []);
+          setFlaggedIds(snapshot.flaggedIds ?? []);
+          setPinnedIds(snapshot.pinnedIds ?? []);
           setArchivedIds(snapshot.archivedIds);
           setTrashedIds(snapshot.trashedIds);
-            setJunkIds(snapshot.junkIds ?? []);
-            setSnoozedIds(snapshot.snoozedIds ?? []);
+          setJunkIds(snapshot.junkIds ?? []);
+          setSnoozedIds(snapshot.snoozedIds ?? []);
           setDeletedIds(snapshot.deletedIds);
           setError(`Mode local hors ligne — ${err instanceof Error ? err.message : "Resend indisponible"}`);
         } catch {
@@ -1286,7 +1369,7 @@ export default function Home() {
         setError(err instanceof Error ? err.message : "Erreur de chargement");
       }
     } finally {
-      if (!background) setLoading(false);
+      setLoading(false);
       refreshRunningRef.current = false;
     }
   }
@@ -1781,7 +1864,7 @@ export default function Home() {
     const nextCompose: ComposeState = {
       ...EMPTY_COMPOSE,
       from: defaultIdentity?.from || settingsFrom,
-      text: composeSignature ? `\n\n${composeSignature}` : "",
+      text: composeSignature ? `\n\n${signatureToText(composeSignature)}` : "",
       html: signatureToHtml(composeSignature),
       attachments: [],
     };
@@ -1887,7 +1970,7 @@ export default function Home() {
       to: replyAddress,
       cc,
       subject: normalizeSubject("Re", message.subject),
-      text: `${replySignature ? `\n\n${replySignature}` : ""}${replyLead}`,
+      text: `${replySignature ? `\n\n${signatureToText(replySignature)}` : ""}${replyLead}`,
       html: `${signatureToHtml(replySignature)}<br><div class="maildesk-quote-head">Le ${message.created_at ? new Date(message.created_at).toLocaleString("fr-FR") : ""}, ${escapeHtml(message.from || "")} a écrit :</div><blockquote>${originalHtml}</blockquote>`,
       replyToMessageId: message.message_id,
       replyReferences: replyReferencesFor(message),
@@ -1924,7 +2007,7 @@ export default function Home() {
       ...EMPTY_COMPOSE,
       from: defaultIdentity?.from || settingsFrom,
       subject: normalizeSubject("TR", message.subject),
-      text: `${forwardSignature ? `\n\n${forwardSignature}` : ""}${forwardedText}`,
+      text: `${forwardSignature ? `\n\n${signatureToText(forwardSignature)}` : ""}${forwardedText}`,
       html: `${signatureToHtml(forwardSignature)}<br><hr><div>${forwardMeta}</div><br>${originalHtml}`,
       attachments: [],
     };
@@ -1944,7 +2027,7 @@ export default function Home() {
         cc: payload.cc || "",
         bcc: payload.bcc || "",
         subject: payload.subject || "",
-        text: `${mailtoText}${composeSignature ? `\n\n${composeSignature}` : ""}`,
+        text: `${mailtoText}${composeSignature ? `\n\n${signatureToText(composeSignature)}` : ""}`,
         html: `${mailtoText ? `<p>${escapeHtml(mailtoText).replace(/\n/g, "<br>")}</p>` : ""}${signatureToHtml(composeSignature)}`,
         attachments: [],
       };
@@ -1956,6 +2039,22 @@ export default function Home() {
     if (payload.action === "settings") return void openSettings();
     if (payload.action === "notification-mark-read" && payload.id) {
       setReadIds((ids) => addId(ids, payload.id!));
+      return;
+    }
+    if (payload.action === "inbox-updated" && window.maildesk) {
+      const snapshot = await window.maildesk.getLocalSnapshot();
+      setInbox(snapshot.messages.filter((mail) => mail.direction !== "outbound") as MailItem[]);
+      setSent(snapshot.messages.filter((mail) => mail.direction === "outbound") as MailItem[]);
+      setReadIds(snapshot.readIds);
+      setStarredIds(snapshot.starredIds);
+      setFlaggedIds(snapshot.flaggedIds ?? []);
+      setPinnedIds(snapshot.pinnedIds ?? []);
+      setArchivedIds(snapshot.archivedIds);
+      setTrashedIds(snapshot.trashedIds);
+      setJunkIds(snapshot.junkIds ?? []);
+      setSnoozedIds(snapshot.snoozedIds ?? []);
+      setDeletedIds(snapshot.deletedIds);
+      void cacheMissingBodies(snapshot.missingBodyIds);
       return;
     }
     if (payload.action === "open-mail-by-id" && payload.id) {
@@ -2110,17 +2209,20 @@ export default function Home() {
         : (mail.to?.[0] || "");
     setSettingsTab("rules");
     setRuleName(field === "from" ? `Courrier de ${senderName(mail.from)}` : "");
-    setRuleField(field);
-    setRuleOperator(field === "from" ? "equals" : "contains");
-    setRuleValue(value);
-    if (customFolders.length > 0) {
-      setRuleAction("move_to_folder");
-      setRuleFolderId(customFolders[0].id);
-    } else {
-      setRuleAction("archive");
-      setRuleFolderId("");
-    }
-    setSettingsMessage("Règle préremplie depuis le message. Choisissez l’action ou le dossier puis enregistrez-la avec la disquette.");
+    setRuleConditions([{
+      id: globalThis.crypto.randomUUID(),
+      field,
+      operator: field === "from" ? "equals" : "contains",
+      value,
+    }]);
+    setRuleActions([customFolders.length > 0
+      ? { id: globalThis.crypto.randomUUID(), type: "move_to_folder", value: customFolders[0].id }
+      : { id: globalThis.crypto.randomUUID(), type: "archive", value: "" }]);
+    setRuleMatchMode("all");
+    setRulePriority(100);
+    setRuleStopProcessing(false);
+    setRuleTestResult(null);
+    setSettingsMessage("Règle préremplie depuis le message. Vous pouvez ajouter d’autres conditions/actions avant de l’enregistrer.");
   }
 
   async function showContextMenu(mail: MailItem) {
@@ -2430,6 +2532,39 @@ export default function Home() {
     }
   }
 
+
+
+  function beginRuleFolderCreate(actionId: string) {
+    setRuleFolderCreateActionId(actionId);
+    setRuleFolderCreateName("");
+  }
+
+  function cancelRuleFolderCreate() {
+    setRuleFolderCreateActionId("");
+    setRuleFolderCreateName("");
+  }
+
+  async function submitRuleFolderCreate(actionId: string) {
+    if (!window.maildesk) return;
+    const name = ruleFolderCreateName.trim();
+    if (!name) return;
+    try {
+      const created = await window.maildesk.saveCustomFolder({
+        name,
+        sortOrder: customFolders.length,
+      });
+      const folders = await window.maildesk.listCustomFolders() as CustomFolderEntry[];
+      setCustomFolders(folders);
+      updateRuleAction(actionId, { value: created.id });
+      setRuleFolderCreateActionId("");
+      setRuleFolderCreateName("");
+      setSettingsMessage(`Dossier « ${created.name} » créé et sélectionné pour la règle.`);
+      void window.maildesk.syncNow();
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : "Impossible de créer le dossier.");
+    }
+  }
+
   async function reorderFolder(sourceId: string, targetId: string) {
     if (!window.maildesk || !sourceId || sourceId === targetId) return;
     const sourceIndex = customFolders.findIndex((item) => item.id === sourceId);
@@ -2532,7 +2667,7 @@ export default function Home() {
       ...EMPTY_COMPOSE,
       from: defaultIdentity?.from || settingsFrom,
       to: address,
-      text: composeSignature ? `\n\n${composeSignature}` : "",
+      text: composeSignature ? `\n\n${signatureToText(composeSignature)}` : "",
       html: signatureToHtml(composeSignature),
       attachments: [],
     });
@@ -2610,29 +2745,116 @@ export default function Home() {
     void window.maildesk.syncNow();
   }
 
+  function resetRuleBuilder() {
+    setRuleName("");
+    setRuleConditions([{ id: globalThis.crypto.randomUUID(), field: "from", operator: "contains", value: "" }]);
+    setRuleActions([{ id: globalThis.crypto.randomUUID(), type: "archive", value: "" }]);
+    setRuleMatchMode("all");
+    setRulePriority(100);
+    setRuleStopProcessing(false);
+    setRuleTestResult(null);
+    setRuleFolderCreateActionId("");
+    setRuleFolderCreateName("");
+  }
+
+  function addRuleCondition() {
+    setRuleConditions((current) => [
+      ...current,
+      { id: globalThis.crypto.randomUUID(), field: "subject", operator: "contains", value: "" },
+    ]);
+    setRuleTestResult(null);
+  }
+
+  function updateRuleCondition(id: string, patch: Partial<MailRuleConditionEntry>) {
+    setRuleConditions((current) => current.map((condition) => condition.id === id ? { ...condition, ...patch } : condition));
+    setRuleTestResult(null);
+  }
+
+  function removeRuleCondition(id: string) {
+    setRuleConditions((current) => current.length > 1 ? current.filter((condition) => condition.id !== id) : current);
+    setRuleTestResult(null);
+  }
+
+  function addRuleAction() {
+    setRuleActions((current) => [...current, { id: globalThis.crypto.randomUUID(), type: "archive", value: "" }]);
+    setRuleTestResult(null);
+  }
+
+  function updateRuleAction(id: string, patch: Partial<MailRuleActionEntry>) {
+    setRuleActions((current) => current.map((action) => action.id === id ? { ...action, ...patch } : action));
+    setRuleTestResult(null);
+  }
+
+  function removeRuleAction(id: string) {
+    setRuleActions((current) => current.length > 1 ? current.filter((action) => action.id !== id) : current);
+    setRuleTestResult(null);
+  }
+
+  function validateRuleDraft() {
+    if (ruleConditions.some((condition) => !condition.value.trim())) {
+      return "Complétez toutes les conditions.";
+    }
+    const invalidTarget = ruleActions.some((action) =>
+      (action.type === "move_to_folder" || action.type === "webhook") && !String(action.value || "").trim());
+    if (invalidTarget) return "Complétez la cible de chaque action.";
+    if (ruleActions.filter((action) => action.type === "webhook").length > 1) return "Une règle ne peut contenir qu’un seul webhook.";
+    for (const action of ruleActions) {
+      if (action.type !== "webhook") continue;
+      try {
+        const url = new URL(String(action.value || "").trim());
+        if (!["http:", "https:"].includes(url.protocol)) return "Chaque webhook doit utiliser une URL HTTP ou HTTPS valide.";
+      } catch {
+        return "Chaque webhook doit utiliser une URL HTTP ou HTTPS valide.";
+      }
+    }
+    return "";
+  }
+
+  async function testRuleDraft() {
+    if (!window.maildesk) return;
+    const validation = validateRuleDraft();
+    if (validation) {
+      setSettingsMessage(validation);
+      return;
+    }
+    try {
+      const result = await window.maildesk.testRule({
+        conditions: ruleConditions,
+        actions: ruleActions,
+        matchMode: ruleMatchMode,
+        priority: rulePriority,
+        stopProcessing: ruleStopProcessing,
+      });
+      setRuleTestResult(result);
+      setSettingsMessage(result.matched
+        ? `Test : ${result.matched} message${result.matched > 1 ? "s" : ""} correspond${result.matched > 1 ? "ent" : ""}.`
+        : "Test : aucun message existant ne correspond.");
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : "Impossible de tester la règle.");
+    }
+  }
+
   async function addRule() {
-    if (!window.maildesk || !ruleValue.trim() || (ruleAction === "move_to_folder" && !ruleFolderId)) {
-      setSettingsMessage("Complétez la condition et, si nécessaire, le dossier cible.");
+    const validation = validateRuleDraft();
+    if (!window.maildesk || validation) {
+      setSettingsMessage(validation || "MailDesk Electron est requis.");
       return false;
     }
+
     try {
       await window.maildesk.saveRule({
         name: ruleName,
-        field: ruleField,
-        operator: ruleOperator,
-        value: ruleValue,
-        action: ruleAction,
-        actionValue: ruleAction === "move_to_folder" ? ruleFolderId : undefined,
+        conditions: ruleConditions,
+        actions: ruleActions,
+        matchMode: ruleMatchMode,
+        priority: rulePriority,
+        stopProcessing: ruleStopProcessing,
         enabled: true,
       });
       setRules(await window.maildesk.listRules() as MailRuleEntry[]);
-      setRuleName("");
-      setRuleField("from");
-      setRuleOperator("contains");
-      setRuleValue("");
-      setRuleAction("archive");
-      setRuleFolderId("");
-      setSettingsMessage("Règle enregistrée.");
+      setRuleRuns(await window.maildesk.listRuleRuns("", 50) as MailRuleRunEntry[]);
+      resetRuleBuilder();
+      setSettingsMessage("Règle V2 enregistrée.");
       void window.maildesk.syncNow();
       return true;
     } catch (err) {
@@ -2806,11 +3028,11 @@ export default function Home() {
     await window.maildesk.saveRule({
       id: rule.id,
       name: rule.name,
-      field: rule.field,
-      operator: rule.operator,
-      value: rule.value,
-      action: rule.action,
-      actionValue: rule.actionValue,
+      conditions: rule.conditions,
+      actions: rule.actions,
+      matchMode: rule.matchMode,
+      priority: rule.priority,
+      stopProcessing: rule.stopProcessing,
       enabled: !rule.enabled,
     });
     setRules(await window.maildesk.listRules() as MailRuleEntry[]);
@@ -2821,6 +3043,7 @@ export default function Home() {
     if (!window.maildesk) return;
     await window.maildesk.deleteRule(id);
     setRules(await window.maildesk.listRules() as MailRuleEntry[]);
+    setRuleRuns(await window.maildesk.listRuleRuns("", 50) as MailRuleRunEntry[]);
     void window.maildesk.syncNow();
   }
 
@@ -2836,6 +3059,7 @@ export default function Home() {
     setJunkIds(result.snapshot.junkIds ?? []);
     setSnoozedIds(result.snapshot.snoozedIds ?? []);
     setDeletedIds(result.snapshot.deletedIds);
+    setRuleRuns(await window.maildesk.listRuleRuns("", 50) as MailRuleRunEntry[]);
     setSettingsMessage(`${result.matched} message${result.matched > 1 ? "s" : ""} traité${result.matched > 1 ? "s" : ""} par les règles.`);
     void window.maildesk.syncNow();
   }
@@ -2890,15 +3114,17 @@ export default function Home() {
     const nextSignature = signatureForSender(identities, nextFrom, signature);
     const previousHtml = signatureToHtml(previousSignature);
     const nextHtml = signatureToHtml(nextSignature);
+    const previousText = signatureToText(previousSignature);
+    const nextText = signatureToText(nextSignature);
 
     setCompose((current) => {
       let text = current.text;
       let html = current.html;
 
-      if (!text.trim() || text.trim() === previousSignature.trim()) {
-        text = nextSignature ? `\n\n${nextSignature}` : "";
-      } else if (previousSignature && text.includes(previousSignature)) {
-        text = text.replace(previousSignature, nextSignature);
+      if (!text.trim() || text.trim() === previousText.trim()) {
+        text = nextText ? `\n\n${nextText}` : "";
+      } else if (previousText && text.includes(previousText)) {
+        text = text.replace(previousText, nextText);
       }
 
       if (!html.trim() || html === previousHtml) {
@@ -3006,27 +3232,27 @@ export default function Home() {
     setSettingsSupabaseKey("");
     setSettingsSupabaseManagementToken("");
     setSettingsTab("account");
-    setRuleName("");
-    setRuleField("from");
-    setRuleOperator("contains");
-    setRuleValue("");
-    setRuleAction("archive");
-    setRuleFolderId("");
+    resetRuleBuilder();
     resetTemplateEditor();
 
     if (window.maildesk) {
       try {
-        const [current, currentRules, currentTemplates, currentBlockedSenders, windowsIntegration, appInfo] = await Promise.all([
+        const [current, currentRules, currentRuleRuns, currentTemplates, currentBlockedSenders, windowsIntegration, appInfo, mobileStatus] = await Promise.all([
           window.maildesk.getSettings(),
           window.maildesk.listRules(),
+          window.maildesk.listRuleRuns("", 50),
           window.maildesk.listTemplates(),
           window.maildesk.listBlockedSenders(),
           window.maildesk.getWindowsIntegration(),
           window.maildesk.getAppInfo(),
+          window.maildesk.getMobileProvisioningStatus(),
         ]);
         setRules(currentRules as MailRuleEntry[]);
+        setRuleRuns(currentRuleRuns as MailRuleRunEntry[]);
         setTemplates(currentTemplates as MailTemplateEntry[]);
         setBlockedSenders(currentBlockedSenders);
+        setMobileProvisioningConfigured(Boolean(mobileStatus.configured));
+        setMobileProvisioningReason(mobileStatus.reason || "QR mobile prêt.");
 
         const currentIdentities = current.identities?.length
           ? current.identities
@@ -3048,6 +3274,8 @@ export default function Home() {
         setSettingsSignature(loadedSignature);
         setSettingsSupabaseUrl(loadedSupabaseUrl);
         setSettingsSupabaseProjectRef(loadedProjectRef);
+        setMobileProvisioningQr("");
+        setMobileProvisioningProjectRef("");
         setSettingsHasSupabaseKey(current.hasSupabaseKey);
         setSettingsHasSupabaseManagementToken(current.hasSupabaseManagementToken);
         setSettingsUndoSendSeconds(loadedUndo);
@@ -3075,11 +3303,11 @@ export default function Home() {
           appearance: JSON.stringify({ themeColor: loadedTheme }),
           rules: JSON.stringify({
             name: "",
-            field: "from",
-            operator: "contains",
-            value: "",
-            action: "archive",
-            actionValue: "",
+            conditions: [{ field: "from", operator: "contains", value: "" }],
+            actions: [{ type: "archive", value: "" }],
+            matchMode: "all",
+            priority: 100,
+            stopProcessing: false,
           }),
           templates: JSON.stringify({ id: "", name: "", subject: "", html: "", text: "", shortcut: "" }),
           windows: JSON.stringify({
@@ -3125,6 +3353,87 @@ export default function Home() {
     }
   }
 
+  async function refreshMobileProvisioningStatus() {
+    if (!window.maildesk) {
+      setMobileProvisioningConfigured(false);
+      setMobileProvisioningReason("MailDesk Desktop est requis.");
+      return false;
+    }
+
+    try {
+      const status = await window.maildesk.getMobileProvisioningStatus();
+      setMobileProvisioningConfigured(Boolean(status.configured));
+      setMobileProvisioningReason(status.reason || "QR mobile prêt.");
+      return Boolean(status.configured);
+    } catch (err) {
+      setMobileProvisioningConfigured(false);
+      setMobileProvisioningReason(err instanceof Error ? err.message : "Configuration mobile indisponible.");
+      return false;
+    }
+  }
+
+  async function openMobileProvisioningQrFromFooter() {
+    if (!window.maildesk || !mobileProvisioningConfigured) return;
+    setGeneratingMobileQr(true);
+    setMobileQrDialogError("");
+    setMobileQrDialogOpen(true);
+    try {
+      const result = await window.maildesk.getMobileProvisioning();
+      setMobileProvisioningQr(result.encoded);
+      setMobileProvisioningProjectRef(result.projectRef || "");
+    } catch (err) {
+      setMobileProvisioningQr("");
+      setMobileQrDialogError(err instanceof Error ? err.message : "Impossible de générer le QR mobile.");
+      await refreshMobileProvisioningStatus();
+    } finally {
+      setGeneratingMobileQr(false);
+    }
+  }
+
+  async function deployMobileEdgeFromSettings() {
+    if (!window.maildesk) return;
+    if (settingsSnapshots.supabase !== settingsBaselines.supabase) {
+      setEdgeDeployMessage("Enregistrez d’abord la configuration Supabase avec la disquette.");
+      return;
+    }
+
+    setDeployingMobileEdge(true);
+    setEdgeDeployMessage("Déploiement de l’Edge Function MailDesk...");
+    try {
+      const result = await window.maildesk.deployMobileEdgeFunction();
+      setEdgeDeployMessage(`${result.message} URL : ${result.apiUrl}`);
+      await refreshMobileProvisioningStatus();
+    } catch (err) {
+      setEdgeDeployMessage(err instanceof Error ? err.message : "Impossible de déployer l’Edge Function MailDesk.");
+    } finally {
+      setDeployingMobileEdge(false);
+    }
+  }
+
+  async function generateMobileProvisioningQr() {
+    if (!window.maildesk) return;
+    if (settingsSnapshots.supabase !== settingsBaselines.supabase) {
+      setSettingsMessage("Enregistrez d’abord la configuration Supabase avant de générer le QR mobile.");
+      return;
+    }
+
+    setGeneratingMobileQr(true);
+    setMobileProvisioningQr("");
+    setSettingsMessage("Génération du QR mobile...");
+    try {
+      const result = await window.maildesk.getMobileProvisioning();
+      setMobileProvisioningQr(result.encoded);
+      setMobileProvisioningProjectRef(result.projectRef || settingsSupabaseProjectRef);
+      setMobileProvisioningConfigured(true);
+      setMobileProvisioningReason("QR mobile prêt.");
+      setSettingsMessage("QR mobile prêt. Scannez-le depuis MailDesk Mobile.");
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : "Impossible de générer le QR mobile.");
+    } finally {
+      setGeneratingMobileQr(false);
+    }
+  }
+
   async function initializeSupabaseFromSettings() {
     if (!window.maildesk) return;
     setInitializingSupabase(true);
@@ -3162,6 +3471,7 @@ export default function Home() {
         }),
       }));
       setSettingsMessage(result.message);
+      await refreshMobileProvisioningStatus();
 
       const snapshot = await window.maildesk.getLocalSnapshot();
       setInbox(snapshot.messages.filter((mail) => mail.direction !== "outbound") as MailItem[]);
@@ -3219,11 +3529,11 @@ export default function Home() {
             ...current,
             rules: JSON.stringify({
               name: "",
-              field: "from",
-              operator: "contains",
-              value: "",
-              action: "archive",
-              actionValue: "",
+              conditions: [{ field: "from", operator: "contains", value: "" }],
+              actions: [{ type: "archive", value: "" }],
+              matchMode: "all",
+              priority: 100,
+              stopProcessing: false,
             }),
           }));
         }
@@ -3342,6 +3652,7 @@ export default function Home() {
           }),
         }));
         setSettingsMessage(result.sync?.message || "Synchronisation Supabase enregistrée.");
+        await refreshMobileProvisioningStatus();
         return;
       }
 
@@ -3615,8 +3926,6 @@ export default function Home() {
         <button className="icon-button mobile-only" onClick={() => setSidebarOpen((value) => !value)} aria-label="Menu">
           <Menu size={20} />
         </button>
-        <Image className="brand-logo" src="/logo_app_mail_resend_64.webp" width={34} height={34} alt="" priority />
-        <div className="brand-name">MailDesk</div>
         <div className="global-search">
           <Search size={18} />
           <input
@@ -3651,8 +3960,7 @@ export default function Home() {
             </div>
           )}
         </div>
-        <button className="icon-button" onClick={() => void openSettings()} aria-label="Paramètres"><Settings size={18} /></button>
-        <div className="avatar">MD</div>
+        <button className="icon-button" onClick={() => void openSettings()} aria-label="Paramètres" title="Paramètres"><Settings size={18} /></button>
       </header>
 
       <div className="workspace">
@@ -3770,9 +4078,21 @@ export default function Home() {
             </button>
           </nav>
           <div className="sidebar-footer">
-            <div className="resend-status">
-              <div className="account-dot" />
-              <div><strong>Resend</strong><span>{typeof window !== "undefined" && window.maildesk ? "Client Windows" : "Mode navigateur"}</span></div>
+            <div className="sidebar-footer-account">
+              <div className="resend-status">
+                <div className="account-dot" />
+                <div><strong>Resend</strong><span>{typeof window !== "undefined" && window.maildesk ? "Client Windows" : "Mode navigateur"}</span></div>
+              </div>
+              <button
+                type="button"
+                className={mobileProvisioningConfigured ? "mobile-qr-shortcut ready" : "mobile-qr-shortcut"}
+                disabled={!mobileProvisioningConfigured || generatingMobileQr}
+                onClick={() => void openMobileProvisioningQrFromFooter()}
+                title={mobileProvisioningConfigured ? "Afficher le QR de connexion MailDesk Mobile" : mobileProvisioningReason}
+                aria-label={mobileProvisioningConfigured ? "Afficher le QR de connexion mobile" : "QR mobile non configuré"}
+              >
+                <QrCode size={18} />
+              </button>
             </div>
             <details className="shortcut-help">
               <summary title="Raccourcis clavier" aria-label="Afficher les raccourcis clavier"><HelpCircle size={18} /></summary>
@@ -4071,13 +4391,10 @@ export default function Home() {
           ) : detail ? (
             <>
               <div className="reading-toolbar">
-                <button onClick={() => void openRuleBuilderFromMail(detail, "from")} title="Créer une règle depuis ce message"><Zap size={17} /> Règle</button>
-                {typeof window !== "undefined" && window.maildesk && <button onClick={() => void window.maildesk?.openMessageWindow(detail.id)} title="Ouvrir dans une nouvelle fenêtre"><ExternalLink size={17} /> Fenêtre</button>}
-                <button onClick={() => void printCurrentConversation()} title="Imprimer la conversation"><Printer size={17} /> Imprimer</button>
-                <button onClick={() => void exportCurrentConversationPdf()} title="Exporter la conversation en PDF"><FileDown size={17} /> PDF</button>
-                <button onClick={() => void exportCurrentMessageEml()} title="Exporter ce message au format EML"><FileText size={17} /> EML</button>
-                <label className="category-quick" title="Catégorie">
-                  <Tag size={16} />
+                {typeof window !== "undefined" && window.maildesk && <button className="reading-icon-button" onClick={() => void window.maildesk?.openMessageWindow(detail.id)} title="Ouvrir dans une nouvelle fenêtre" aria-label="Ouvrir dans une nouvelle fenêtre"><ExternalLink size={18} /></button>}
+                <button className="reading-icon-button" onClick={() => void printCurrentConversation()} title="Imprimer la conversation" aria-label="Imprimer la conversation"><Printer size={18} /></button>
+                <label className="category-quick reading-icon-button" title="Catégorie" aria-label="Catégorie">
+                  <Tag size={18} />
                   <select value={detail.category || ""} onChange={(event) => setMailCategory(detail, event.target.value)}>
                     <option value="">Sans catégorie</option>
                     {MAIL_CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
@@ -4085,31 +4402,42 @@ export default function Home() {
                 </label>
                 {trashedIds.includes(detail.id) ? (
                   <>
-                    <button onClick={() => restoreMail(detail)}><RotateCcw size={17} /> Restaurer</button>
-                    <button onClick={() => deleteForever(detail)}><Trash2 size={17} /> Supprimer définitivement</button>
+                    <button className="reading-icon-button" onClick={() => restoreMail(detail)} title="Restaurer" aria-label="Restaurer"><RotateCcw size={18} /></button>
+                    <button className="reading-icon-button" onClick={() => deleteForever(detail)} title="Supprimer définitivement" aria-label="Supprimer définitivement"><Trash2 size={18} /></button>
                   </>
                 ) : junkIds.includes(detail.id) ? (
                   <>
-                    <button onClick={() => restoreFromJunk(detail)}><RotateCcw size={17} /> Pas indésirable</button>
-                    <button onClick={() => trashMail(detail)}><Trash2 size={17} /> Supprimer</button>
+                    <button className="reading-icon-button" onClick={() => restoreFromJunk(detail)} title="Pas indésirable" aria-label="Pas indésirable"><RotateCcw size={18} /></button>
+                    <button className="reading-icon-button" onClick={() => trashMail(detail)} title="Supprimer" aria-label="Supprimer"><Trash2 size={18} /></button>
                   </>
                 ) : snoozedIds.includes(detail.id) ? (
                   <>
-                    <button onClick={() => restoreSnoozedMail(detail)}><RotateCcw size={17} /> Remettre maintenant</button>
-                    <button onClick={() => trashMail(detail)}><Trash2 size={17} /> Supprimer</button>
+                    <button className="reading-icon-button" onClick={() => restoreSnoozedMail(detail)} title="Remettre maintenant" aria-label="Remettre maintenant"><RotateCcw size={18} /></button>
+                    <button className="reading-icon-button" onClick={() => trashMail(detail)} title="Supprimer" aria-label="Supprimer"><Trash2 size={18} /></button>
                   </>
                 ) : archivedIds.includes(detail.id) ? (
                   <>
-                    <button onClick={() => restoreMail(detail)}><RotateCcw size={17} /> Restaurer</button>
-                    <button onClick={() => trashMail(detail)}><Trash2 size={17} /> Supprimer</button>
+                    <button className="reading-icon-button" onClick={() => restoreMail(detail)} title="Restaurer" aria-label="Restaurer"><RotateCcw size={18} /></button>
+                    <button className="reading-icon-button" onClick={() => trashMail(detail)} title="Supprimer" aria-label="Supprimer"><Trash2 size={18} /></button>
                   </>
                 ) : (
                   <>
-                    <button onClick={() => archiveMail(detail)}><Archive size={17} /> Archiver</button>
-                    {sourceFolder(detail) !== "sent" && <button onClick={() => void blockMailSender(detail)}><ShieldBan size={17} /> Bloquer</button>}
-                    <button onClick={() => trashMail(detail)}><Trash2 size={17} /> Supprimer</button>
+                    <button className="reading-icon-button" onClick={() => archiveMail(detail)} title="Archiver" aria-label="Archiver"><Archive size={18} /></button>
+                    {sourceFolder(detail) !== "sent" && <button className="reading-icon-button" onClick={() => void blockMailSender(detail)} title="Bloquer l’expéditeur" aria-label="Bloquer l’expéditeur"><ShieldBan size={18} /></button>}
+                    <button className="reading-icon-button" onClick={() => trashMail(detail)} title="Supprimer" aria-label="Supprimer"><Trash2 size={18} /></button>
                   </>
                 )}
+                <div className="reading-toolbar-spacer" />
+                <div className="message-more-wrap">
+                  <button className="reading-icon-button" type="button" onClick={() => setMessageMoreOpen((open) => !open)} title="Plus d’actions" aria-label="Plus d’actions"><MoreHorizontal size={20} /></button>
+                  {messageMoreOpen && (
+                    <div className="message-more-menu">
+                      <button type="button" onClick={() => { setMessageMoreOpen(false); void openRuleBuilderFromMail(detail, "from"); }}><Zap size={17} /><span>Créer une règle</span></button>
+                      <button type="button" onClick={() => { setMessageMoreOpen(false); void exportCurrentConversationPdf(); }}><FileDown size={17} /><span>Exporter en PDF</span></button>
+                      <button type="button" onClick={() => { setMessageMoreOpen(false); void exportCurrentMessageEml(); }}><FileText size={17} /><span>Exporter en EML</span></button>
+                    </div>
+                  )}
+                </div>
               </div>
               {selectedConversation.length > 1 ? (
                 <article className="conversation-detail">
@@ -4150,7 +4478,7 @@ export default function Home() {
                                   {loaded.attachments?.length ? (
                                     <div className="received-attachments">
                                       {loaded.attachments.map((attachment) => (
-                                        <a key={attachment.id} href={`/api/mail/${sourceFolder(mail)}/${mail.id}/attachments/${attachment.id}`} download>
+                                        <a key={attachment.id} href={attachment.url || `/api/mail/${sourceFolder(mail)}/${mail.id}/attachments/${attachment.id}`} download>
                                           <Paperclip size={15} />
                                           <span><strong>{attachment.filename || "Pièce jointe"}</strong><small>{formatBytes(attachment.size)}</small></span>
                                           <Download size={15} />
@@ -4215,7 +4543,7 @@ export default function Home() {
                   {detail.attachments?.length ? (
                     <div className="received-attachments">
                       {detail.attachments.map((attachment) => (
-                        <a key={attachment.id} href={`/api/mail/${sourceFolder(detail)}/${detail.id}/attachments/${attachment.id}`} download>
+                        <a key={attachment.id} href={attachment.url || `/api/mail/${sourceFolder(detail)}/${detail.id}/attachments/${attachment.id}`} download>
                           <Paperclip size={15} />
                           <span><strong>{attachment.filename || "Pièce jointe"}</strong><small>{formatBytes(attachment.size)}</small></span>
                           <Download size={15} />
@@ -4337,6 +4665,33 @@ export default function Home() {
             <span>Envoi dans quelques secondes : {undoSend.item.subject || "(Sans objet)"}</span>
           </div>
           <button type="button" onClick={() => void undoQueuedSend()}>Annuler l’envoi</button>
+        </div>
+      )}
+
+      {mobileQrDialogOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setMobileQrDialogOpen(false)}>
+          <section className="mobile-qr-dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="settings-header">
+              <div><span className="eyebrow">MailDesk Mobile</span><h2>QR de connexion</h2></div>
+              <button className="icon-button" type="button" onClick={() => setMobileQrDialogOpen(false)} title="Fermer"><X size={18} /></button>
+            </div>
+            <div className="mobile-qr-dialog-body">
+              {generatingMobileQr ? (
+                <div className="mobile-qr-loading"><QrCode size={38} /><strong>Génération du QR…</strong><span>Préparation de la configuration mobile sécurisée.</span></div>
+              ) : mobileQrDialogError ? (
+                <div className="mobile-qr-error"><strong>QR indisponible</strong><span>{mobileQrDialogError}</span></div>
+              ) : mobileProvisioningQr ? (
+                <>
+                  <div className="mobile-provisioning-qr"><QRCodeSVG value={mobileProvisioningQr} size={220} level="M" marginSize={2} /></div>
+                  <div className="mobile-qr-dialog-copy">
+                    <strong>Scanner avec MailDesk Mobile</strong>
+                    <span>Projet {mobileProvisioningProjectRef || "Supabase"}</span>
+                    <small>Le QR contient uniquement la configuration publique nécessaire à l’application mobile. Aucun secret Resend ou service_role n’est inclus.</small>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </section>
         </div>
       )}
 
@@ -4497,7 +4852,7 @@ export default function Home() {
                             <label><span>Nom</span><input value={identity.name} onChange={(event) => updateIdentitySetting(identity.id, { name: event.target.value })} placeholder="Commercial, Support, Personnel..." /></label>
                             <label><span>Adresse d’envoi Resend</span><input value={identity.isDefault ? settingsFrom : identity.from} onChange={(event) => identity.isDefault ? setSettingsFrom(event.target.value) : updateIdentitySetting(identity.id, { from: event.target.value })} placeholder="Nom <mail@votre-domaine.fr>" /></label>
                           </div>
-                          <label><span>Signature</span><textarea value={identity.isDefault ? settingsSignature : identity.signature} onChange={(event) => identity.isDefault ? setSettingsSignature(event.target.value) : updateIdentitySetting(identity.id, { signature: event.target.value })} placeholder={"Cordialement,\nVotre nom\nEntreprise"} /></label>
+                          <label><span>Signature</span><SignatureEditor value={identity.isDefault ? settingsSignature : identity.signature} onChange={(value) => identity.isDefault ? setSettingsSignature(value) : updateIdentitySetting(identity.id, { signature: value })} /></label>
                         </div>
                       ))}
                       <button className="add-identity-button" type="button" onClick={addIdentitySetting}><Plus size={15} /> Ajouter une identité</button>
@@ -4594,28 +4949,131 @@ export default function Home() {
 
                 {settingsTab === "rules" && (
                   <section className="settings-tab-panel">
-                    <div className="settings-panel-title"><div><span className="eyebrow">Automatisation</span><h3>Règles de courrier</h3><p>Renseignez une nouvelle règle puis utilisez la disquette de cet onglet.</p></div>{settingsPanelSaveButton("rules")}</div>
-                    <div className="rule-builder">
-                      <input value={ruleName} onChange={(event) => setRuleName(event.target.value)} placeholder="Nom de la règle (optionnel)" />
-                      <div className="rule-builder-grid">
-                        <select value={ruleField} onChange={(event) => setRuleField(event.target.value as MailRuleEntry["field"])}><option value="from">Expéditeur</option><option value="subject">Objet</option><option value="to">Destinataire</option></select>
-                        <select value={ruleOperator} onChange={(event) => setRuleOperator(event.target.value as MailRuleEntry["operator"])}><option value="contains">contient</option><option value="equals">est exactement</option><option value="ends_with">se termine par</option></select>
-                        <input value={ruleValue} onChange={(event) => setRuleValue(event.target.value)} placeholder="Valeur à rechercher" />
-                        <select value={ruleAction} onChange={(event) => setRuleAction(event.target.value as MailRuleEntry["action"])}><option value="archive">Archiver</option><option value="star">Ajouter aux favoris</option><option value="read">Marquer comme lu</option><option value="trash">Déplacer dans la corbeille</option><option value="move_to_folder">Déplacer vers un dossier</option></select>
+                    <div className="settings-panel-title"><div><span className="eyebrow">Automatisation V2</span><h3>Règles de courrier</h3><p>Combinez plusieurs conditions et plusieurs actions, dans l’ordre de priorité choisi.</p></div>{settingsPanelSaveButton("rules")}</div>
+
+                    <div className="rule-builder rule-builder-v2">
+                      <div className="rule-v2-head">
+                        <input value={ruleName} onChange={(event) => setRuleName(event.target.value)} placeholder="Nom de la règle (optionnel)" />
+                        <label><span>Correspondance</span><select value={ruleMatchMode} onChange={(event) => { setRuleMatchMode(event.target.value as "all" | "any"); setRuleTestResult(null); }}><option value="all">Toutes les conditions (ET)</option><option value="any">Au moins une condition (OU)</option></select></label>
+                        <label><span>Priorité</span><input type="number" min={0} max={9999} value={rulePriority} onChange={(event) => setRulePriority(Math.max(0, Math.min(9999, Number(event.target.value) || 0)))} /></label>
+                        <label className="rule-stop-option"><input type="checkbox" checked={ruleStopProcessing} onChange={(event) => setRuleStopProcessing(event.target.checked)} /><span>Arrêter les règles suivantes si celle-ci correspond</span></label>
                       </div>
-                      {ruleAction === "move_to_folder" && <label className="rule-folder-target"><span>Dossier cible</span><select value={ruleFolderId} onChange={(event) => setRuleFolderId(event.target.value)}><option value="">Choisir un dossier...</option>{customFolders.map((customFolder) => <option key={customFolder.id} value={customFolder.id}>{customFolder.name}</option>)}</select></label>}
-                      <div className="rule-builder-actions"><button type="button" onClick={() => void runRulesNow()} disabled={rules.length === 0}>Appliquer aux messages existants</button></div>
+
+                      <div className="rule-v2-section-title"><strong>Conditions</strong><button type="button" onClick={addRuleCondition}><Plus size={14} /> Ajouter une condition</button></div>
+                      <div className="rule-v2-stack">
+                        {ruleConditions.map((condition, index) => (
+                          <div className="rule-v2-row" key={condition.id}>
+                            <span className="rule-v2-index">{index + 1}</span>
+                            <select value={condition.field} onChange={(event) => updateRuleCondition(condition.id, { field: event.target.value as MailRuleConditionEntry["field"] })}><option value="from">Expéditeur</option><option value="subject">Objet</option><option value="to">Destinataire</option></select>
+                            <select value={condition.operator} onChange={(event) => updateRuleCondition(condition.id, { operator: event.target.value as MailRuleConditionEntry["operator"] })}><option value="contains">contient</option><option value="equals">est exactement</option><option value="ends_with">se termine par</option></select>
+                            <input value={condition.value} onChange={(event) => updateRuleCondition(condition.id, { value: event.target.value })} placeholder="Valeur à rechercher" />
+                            <button type="button" className="rule-v2-remove" disabled={ruleConditions.length === 1} onClick={() => removeRuleCondition(condition.id)} title="Retirer cette condition"><Trash2 size={14} /></button>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="rule-v2-section-title"><strong>Actions</strong><button type="button" onClick={addRuleAction}><Plus size={14} /> Ajouter une action</button></div>
+                      <div className="rule-v2-stack">
+                        {ruleActions.map((action, index) => (
+                          <div className="rule-v2-row rule-v2-action-row" key={action.id}>
+                            <span className="rule-v2-index">{index + 1}</span>
+                            <select value={action.type} onChange={(event) => updateRuleAction(action.id, { type: event.target.value as MailRuleActionEntry["type"], value: "" })}>
+                              <option value="archive">Archiver</option>
+                              <option value="star">Ajouter aux favoris</option>
+                              <option value="read">Marquer comme lu</option>
+                              <option value="trash">Déplacer dans la corbeille</option>
+                              <option value="move_to_folder">Déplacer vers un dossier</option>
+                              <option value="webhook">Appeler un webhook externe</option>
+                            </select>
+                            {action.type === "move_to_folder" ? (
+                              <div className="rule-v2-target rule-folder-target">
+                                <select
+                                  value={action.value || ""}
+                                  onChange={(event) => {
+                                    if (event.target.value === "__create__") {
+                                      beginRuleFolderCreate(action.id);
+                                      return;
+                                    }
+                                    cancelRuleFolderCreate();
+                                    updateRuleAction(action.id, { value: event.target.value });
+                                  }}
+                                >
+                                  <option value="">Choisir un dossier...</option>
+                                  <option value="__create__">＋ Créer le dossier...</option>
+                                  {customFolders.map((customFolder) => <option key={customFolder.id} value={customFolder.id}>{customFolder.name}</option>)}
+                                </select>
+                                {ruleFolderCreateActionId === action.id && (
+                                  <div className="rule-folder-create">
+                                    <input
+                                      autoFocus
+                                      value={ruleFolderCreateName}
+                                      onChange={(event) => setRuleFolderCreateName(event.target.value)}
+                                      onKeyDown={(event) => {
+                                        if (event.key === "Enter") {
+                                          event.preventDefault();
+                                          void submitRuleFolderCreate(action.id);
+                                        }
+                                        if (event.key === "Escape") {
+                                          event.preventDefault();
+                                          cancelRuleFolderCreate();
+                                        }
+                                      }}
+                                      placeholder="Nom du nouveau dossier"
+                                      maxLength={80}
+                                    />
+                                    <button type="button" onClick={() => void submitRuleFolderCreate(action.id)} disabled={!ruleFolderCreateName.trim()} title="Créer le dossier"><FolderPlus size={14} /></button>
+                                    <button type="button" onClick={cancelRuleFolderCreate} title="Annuler"><X size={14} /></button>
+                                  </div>
+                                )}
+                              </div>
+                            ) : action.type === "webhook" ? (
+                              <input className="rule-v2-target" type="url" value={action.value || ""} onChange={(event) => updateRuleAction(action.id, { value: event.target.value })} placeholder="https://exemple.fr/webhooks/maildesk" />
+                            ) : <div className="rule-v2-target rule-v2-no-target">Aucune cible supplémentaire</div>}
+                            <button type="button" className="rule-v2-remove" disabled={ruleActions.length === 1} onClick={() => removeRuleAction(action.id)} title="Retirer cette action"><Trash2 size={14} /></button>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="rule-v2-help">Les webhooks sont envoyés en POST JSON avec file locale, déduplication et retry. Leur URL reste locale à MailDesk et n’est pas synchronisée vers Supabase.</div>
+                      <div className="rule-builder-actions rule-builder-actions-v2">
+                        <button type="button" onClick={() => void testRuleDraft()}>Tester sans appliquer</button>
+                        <button type="button" onClick={() => void runRulesNow()} disabled={rules.length === 0}>Appliquer les règles enregistrées aux messages existants</button>
+                      </div>
+
+                      {ruleTestResult && (
+                        <div className="rule-test-result">
+                          <strong>{ruleTestResult.matched} message{ruleTestResult.matched > 1 ? "s" : ""} correspondant{ruleTestResult.matched > 1 ? "s" : ""}</strong>
+                          {ruleTestResult.samples.map((sample) => <span key={sample.id}>{sample.from || "Expéditeur inconnu"} — {sample.subject}</span>)}
+                        </div>
+                      )}
                     </div>
+
                     <div className="settings-subtitle">Règles enregistrées</div>
                     {rules.length === 0 ? <div className="settings-message">Aucune règle enregistrée.</div> : (
                       <div className="rules-list">{rules.map((rule) => (
-                        <div className={rule.enabled ? "rule-row" : "rule-row disabled"} key={rule.id}>
+                        <div className={rule.enabled ? "rule-row rule-row-v2" : "rule-row rule-row-v2 disabled"} key={rule.id}>
                           <button type="button" className="rule-toggle" onClick={() => void toggleRule(rule)} aria-label={rule.enabled ? "Désactiver la règle" : "Activer la règle"}><span className={rule.enabled ? "switch on" : "switch"}><i /></span></button>
-                          <div className="rule-copy"><strong>{rule.name}</strong><span>{rule.field === "from" ? "Expéditeur" : rule.field === "subject" ? "Objet" : "Destinataire"} {rule.operator === "contains" ? "contient" : rule.operator === "equals" ? "est" : "se termine par"} “{rule.value}” → {rule.action === "archive" ? "Archiver" : rule.action === "star" ? "Favori" : rule.action === "read" ? "Lu" : rule.action === "trash" ? "Corbeille" : "Dossier « " + (customFolders.find((item) => item.id === rule.actionValue)?.name || "introuvable") + " »"}</span></div>
+                          <div className="rule-copy">
+                            <strong>{rule.name}</strong>
+                            <small>Priorité {rule.priority} · {rule.matchMode === "all" ? "ET" : "OU"} · {rule.conditions.length} condition{rule.conditions.length > 1 ? "s" : ""} · {rule.actions.length} action{rule.actions.length > 1 ? "s" : ""}{rule.stopProcessing ? " · arrêt après correspondance" : ""}</small>
+                            <span>{rule.conditions.map((condition) => `${ruleFieldLabel(condition.field)} ${ruleOperatorLabel(condition.operator)} “${condition.value}”`).join(rule.matchMode === "all" ? " ET " : " OU ")}</span>
+                            <span className="rule-actions-summary">→ {rule.actions.map((action) => ruleActionLabel(action, customFolders)).join(" + ")}</span>
+                          </div>
                           <button type="button" className="rule-delete" onClick={() => void deleteRuleEntry(rule.id)} title="Supprimer la règle"><Trash2 size={15} /></button>
                         </div>
                       ))}</div>
                     )}
+
+                    <div className="settings-subtitle">Activité récente des règles</div>
+                    {ruleRuns.length === 0 ? <div className="settings-message">Aucune règle déclenchée récemment.</div> : (
+                      <div className="rule-run-list">{ruleRuns.slice(0, 12).map((run) => (
+                        <div className="rule-run-row" key={run.id}>
+                          <span><strong>{run.ruleName}</strong><small>{new Date(run.createdAt).toLocaleString("fr-FR")}</small></span>
+                          <span>{run.actions.map((action) => ruleActionLabel({ id: "", type: action.type, value: action.value }, customFolders)).join(" + ")}</span>
+                        </div>
+                      ))}</div>
+                    )}
+
                     <div className="settings-subtitle">Expéditeurs bloqués</div>
                     <div className="blocked-senders">{blockedSenders.length === 0 ? <div className="settings-message">Aucun expéditeur bloqué.</div> : blockedSenders.map((sender) => <div className="blocked-sender-row" key={sender.email}><span><ShieldBan size={15} /><strong>{sender.email}</strong></span><button type="button" onClick={() => void unblockMailSender(sender.email)}>Débloquer</button></div>)}</div>
                   </section>
@@ -4668,12 +5126,49 @@ export default function Home() {
                 {settingsTab === "supabase" && (
                   <section className="settings-tab-panel">
                     <div className="settings-panel-title"><div><span className="eyebrow">Cloud optionnel</span><h3>Synchronisation Supabase</h3><p>Mails, contacts, dossiers, règles, modèles et calendrier peuvent être synchronisés.</p></div>{settingsPanelSaveButton("supabase")}</div>
-                    <label className="settings-field"><span>URL du projet Supabase</span><input value={settingsSupabaseUrl} onChange={(event) => setSettingsSupabaseUrl(event.target.value)} placeholder="https://xxxx.supabase.co" /></label>
-                    <label className="settings-field"><span>Project Ref</span><input value={settingsSupabaseProjectRef} onChange={(event) => setSettingsSupabaseProjectRef(event.target.value)} placeholder="Détecté automatiquement depuis l’URL si possible" /></label>
-                    <label className="settings-field"><span>Clé de synchronisation</span><input type="password" value={settingsSupabaseKey} onChange={(event) => setSettingsSupabaseKey(event.target.value)} placeholder={settingsHasSupabaseKey ? "Clé déjà enregistrée — laisser vide pour la conserver" : "service_role / sb_secret_…"} /></label>
-                    <label className="settings-field"><span>Token Supabase Management API</span><input type="password" value={settingsSupabaseManagementToken} onChange={(event) => setSettingsSupabaseManagementToken(event.target.value)} placeholder={settingsHasSupabaseManagementToken ? "Token déjà enregistré — laisser vide pour le conserver" : "sbp_… avec permission database_write"} /></label>
-                    <div className="security-note"><strong>Initialisation automatique</strong><span>Le token Management API permet à MailDesk de créer/réparer toutes ses tables puis de tester la Data API.</span></div>
-                    <div className="supabase-actions"><button type="button" className="primary-outline" onClick={() => void initializeSupabaseFromSettings()} disabled={initializingSupabase || !settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey) || !(settingsSupabaseManagementToken || settingsHasSupabaseManagementToken)}>{initializingSupabase ? "Initialisation..." : "Créer / réparer les tables"}</button><button type="button" onClick={() => void syncNowFromSettings()} disabled={!settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey)}>Synchroniser maintenant</button></div>
+                    <label className="settings-field"><span>URL du projet Supabase</span><input value={settingsSupabaseUrl} onChange={(event) => { setSettingsSupabaseUrl(event.target.value); setMobileProvisioningQr(""); }} placeholder="https://xxxx.supabase.co" /></label>
+                    <label className="settings-field"><span>Project Ref</span><input value={settingsSupabaseProjectRef} onChange={(event) => { setSettingsSupabaseProjectRef(event.target.value); setMobileProvisioningQr(""); }} placeholder="Détecté automatiquement depuis l’URL si possible" /></label>
+                    <label className="settings-field"><span>Clé de synchronisation</span><input type="password" value={settingsSupabaseKey} onChange={(event) => { setSettingsSupabaseKey(event.target.value); setMobileProvisioningQr(""); }} placeholder={settingsHasSupabaseKey ? "Clé déjà enregistrée — laisser vide pour la conserver" : "service_role / sb_secret_…"} /></label>
+                    <label className="settings-field"><span>Token Supabase Management API</span><input type="password" value={settingsSupabaseManagementToken} onChange={(event) => { setSettingsSupabaseManagementToken(event.target.value); setMobileProvisioningQr(""); }} placeholder={settingsHasSupabaseManagementToken ? "Token déjà enregistré — laisser vide pour la conserver" : "sbp_… : database_write + api_gateway_keys_read + edge_functions_write"} /></label>
+                    <div className="security-note edge-api-summary">
+                      <strong>API mobile Supabase Edge</strong>
+                      <span>L’URL n’a plus besoin d’être saisie : MailDesk la calcule automatiquement depuis l’URL du projet Supabase.</span>
+                      <code>{supabaseEdgeApiUrl || "https://<project-ref>.supabase.co/functions/v1/maildesk-api"}</code>
+                    </div>
+                    <div className="security-note"><strong>Initialisation automatique</strong><span>Le token Management API permet à MailDesk de créer/réparer toutes ses tables, tester la Data API, récupérer la clé publishable du QR mobile et déployer l’Edge Function.</span></div>
+                    <div className="supabase-actions"><button type="button" className="primary-outline" onClick={() => void initializeSupabaseFromSettings()} disabled={initializingSupabase || !settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey) || !(settingsSupabaseManagementToken || settingsHasSupabaseManagementToken)}>{initializingSupabase ? "Initialisation..." : "Créer / réparer les tables"}</button><button type="button" onClick={() => void syncNowFromSettings()} disabled={!settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey)}>Synchroniser maintenant</button><button type="button" className="primary-outline" onClick={() => void generateMobileProvisioningQr()} disabled={generatingMobileQr || !settingsSupabaseUrl}>{generatingMobileQr ? "Génération..." : "QR de connexion mobile"}</button></div>
+                    <details className="edge-wiki">
+                      <summary><Database size={16} /><span>Wiki configuration Supabase Edge</span><ChevronDown size={14} /></summary>
+                      <div className="edge-wiki-body">
+                        <div className="edge-wiki-step">
+                          <span className="edge-wiki-index">1</span>
+                          <div><strong>Tables MailDesk</strong><p>Crée ou répare les tables de synchronisation utilisées par MailDesk Desktop et Mobile.</p><button type="button" onClick={() => void initializeSupabaseFromSettings()} disabled={initializingSupabase || !settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey) || !(settingsSupabaseManagementToken || settingsHasSupabaseManagementToken)}>{initializingSupabase ? "Initialisation..." : "Créer / réparer les tables"}</button></div>
+                        </div>
+                        <div className="edge-wiki-step">
+                          <span className="edge-wiki-index">2</span>
+                          <div><strong>Edge Function maildesk-api</strong><p>Déploie ou met à jour automatiquement la fonction qui expose Inbox, Envoyés, détail, pièces jointes, envoi et profil mobile.</p><code>{supabaseEdgeApiUrl || "URL calculée après saisie de l’URL Supabase"}</code><button type="button" className="primary-outline" onClick={() => void deployMobileEdgeFromSettings()} disabled={deployingMobileEdge || !settingsSupabaseUrl || !(settingsSupabaseManagementToken || settingsHasSupabaseManagementToken)}>{deployingMobileEdge ? "Déploiement..." : "Créer / mettre à jour l’API Edge"}</button>{edgeDeployMessage && <small>{edgeDeployMessage}</small>}</div>
+                        </div>
+                        <div className="edge-wiki-step">
+                          <span className="edge-wiki-index">3</span>
+                          <div><strong>Secrets Edge requis</strong><p>À renseigner dans Supabase → Edge Functions → Secrets. Les secrets ne sont jamais intégrés au QR.</p><div className="edge-secret-list"><code>RESEND_API_KEY</code><code>RESEND_FROM</code><code>MAILDESK_MOBILE_ALLOWED_EMAILS</code><span>ou</span><code>MAILDESK_MOBILE_ALLOWED_USER_IDS</code><code className="optional">MAILDESK_MOBILE_SIGNATURE_HTML (optionnel)</code></div></div>
+                        </div>
+                        <div className="edge-wiki-step">
+                          <span className="edge-wiki-index">4</span>
+                          <div><strong>Permissions du token Management API</strong><p><code>database_write</code> pour les tables, <code>api_gateway_keys_read</code> pour la clé mobile et <code>edge_functions_write</code> pour déployer l’API Edge.</p></div>
+                        </div>
+                        <div className="edge-wiki-step">
+                          <span className="edge-wiki-index">5</span>
+                          <div><strong>Provisionnement mobile</strong><p>Une fois l’Edge Function et ses secrets prêts, générez le QR. Le mobile recevra automatiquement l’URL Edge calculée ; aucun backend séparé n’est nécessaire.</p></div>
+                        </div>
+                      </div>
+                    </details>
+                    <div className="security-note"><strong>QR mobile sécurisé</strong><span>Le QR ne contient jamais la clé service_role / sb_secret. Il contient uniquement l’URL Supabase, la clé publishable/anon et l’URL Edge MailDesk calculée automatiquement.</span></div>
+                    {mobileProvisioningQr && (
+                      <div className="mobile-provisioning-card">
+                        <div className="mobile-provisioning-qr"><QRCodeSVG value={mobileProvisioningQr} size={196} level="M" marginSize={2} /></div>
+                        <div className="mobile-provisioning-copy"><strong>Scanner avec MailDesk Mobile</strong><span>Projet {mobileProvisioningProjectRef || settingsSupabaseProjectRef || "Supabase"}</span><span>Le téléphone enregistrera cette configuration dans son stockage sécurisé puis affichera directement la connexion.</span><small>Ce QR configure l’application ; il ne connecte pas automatiquement un utilisateur et ne contient aucun mot de passe.</small></div>
+                      </div>
+                    )}
                   </section>
                 )}
 
