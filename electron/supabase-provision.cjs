@@ -44,6 +44,12 @@ function mobileEdgeApiUrl(settings) {
   return supabaseUrl ? `${supabaseUrl}/functions/v1/${EDGE_FUNCTION_SLUG}` : "";
 }
 
+function authEmailFromSettings(settings) {
+  const raw = String(settings?.supabaseAuthEmail || settings?.from || "").trim();
+  const bracket = raw.match(/<([^<>\s]+@[^<>\s]+)>/);
+  return String(bracket?.[1] || raw).trim().toLowerCase();
+}
+
 async function responseDetail(response) {
   try {
     const body = await response.json();
@@ -155,7 +161,7 @@ async function resolveMobilePublishableKey(settings) {
   }
 
   const response = await fetch(
-    `${MANAGEMENT_BASE}/v1/projects/${encodeURIComponent(projectRef)}/api-keys?reveal=true`,
+    `${MANAGEMENT_BASE}/v1/projects/${encodeURIComponent(projectRef)}/api-keys`,
     {
       headers: {
         Authorization: `Bearer ${token}`,

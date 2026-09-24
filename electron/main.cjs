@@ -1336,7 +1336,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-  // Outlook-like behavior: the application remains available from the Windows tray.
+  // Desktop mail behavior: the application remains available from the Windows tray.
 });
 
 app.on("before-quit", () => {

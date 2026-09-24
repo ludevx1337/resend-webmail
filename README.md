@@ -1,6 +1,6 @@
 # MailDesk
 
-MailDesk est un client e-mail Windows construit avec **Electron + Next.js + TypeScript + Resend**. Son interface reprend les grands principes d'Outlook : dossiers, liste des messages, volet de lecture, rédaction riche, raccourcis clavier, intégration Windows et fonctionnement en arrière-plan.
+MailDesk est un client e-mail Windows construit avec **Electron + Next.js + TypeScript + Resend**. Son interface reprend les grands principes d’un client de messagerie moderne : dossiers, liste des messages, volet de lecture, rédaction riche, raccourcis clavier, intégration Windows et fonctionnement en arrière-plan.
 
 ## Fonctionnalités
 
@@ -14,7 +14,7 @@ MailDesk est un client e-mail Windows construit avec **Electron + Next.js + Type
 - hydratation en arrière-plan du contenu des messages reçus pour l'accès hors ligne ;
 - synchronisation Supabase push/pull facultative ;
 - état lu/non lu, favoris, archives, corbeille et suppression persistés localement ;
-- conversations Outlook-like reconstruites avec `Message-ID`, `In-Reply-To` et `References`, synchronisées SQLite/Supabase ;
+- conversations reconstruites avec `Message-ID`, `In-Reply-To` et `References`, synchronisées SQLite/Supabase ;
 - liste regroupée avec compteur de messages et volet de conversation repliable ;
 - lecture HTML ou texte dans un `iframe` sandboxé ;
 - nouveau message, Cc/Cci, réponse, réponse à tous et transfert avec conservation du thread RFC ;
@@ -33,7 +33,7 @@ MailDesk est un client e-mail Windows construit avec **Electron + Next.js + Type
 - boîte d'envoi SQLite hors ligne avec retry automatique, édition/suppression et clés d'idempotence Resend pour éviter les doublons ;
 - recherche plein texte locale SQLite FTS5 dans sujet, expéditeur, destinataires, corps et pièces jointes, disponible hors ligne ;
 - recherche avancée combinable : `from:`, `to:`, `subject:`, `has:attachment`, `before:`, `after:`, `is:`, `category:`, `folder:` ;
-- liste de courrier Outlook-like avec regroupement **Outlook / jour / semaine / mois**, sections repliables et groupe **Épinglés** ;
+- liste de courrier avec regroupement **chronologique / jour / semaine / mois**, sections repliables et groupe **Épinglés** ;
 - sélection multiple activable avec sélection totale et actions groupées ;
 - drapeau **Important**, épingle persistante et suppression rapide directement sur chaque ligne ;
 - dossiers personnalisés SQLite/Supabase affichés directement sous **Boîte de réception**, création inline, compteurs, renommage, suppression sûre et ordre manuel par glisser-déposer ;
@@ -99,7 +99,7 @@ MailDesk utilise les identifiants RFC du courrier pour reconstruire les échange
 - `In-Reply-To` pointe vers le message auquel on répond ;
 - `References` conserve la chaîne complète de la conversation.
 
-Les mails reçus extraient ces valeurs depuis les headers exposés par Resend. Pour les mails envoyés, MailDesk conserve localement le parent et la chaîne de références au moment de l'envoi, y compris pour les messages qui passent par la boîte d'envoi hors ligne. Les réponses utilisent ensuite les mêmes headers lors de l'envoi afin que MailDesk, Outlook, Gmail et les autres clients compatibles regroupent le fil de manière cohérente.
+Les mails reçus extraient ces valeurs depuis les headers exposés par Resend. Pour les mails envoyés, MailDesk conserve localement le parent et la chaîne de références au moment de l'envoi, y compris pour les messages qui passent par la boîte d'envoi hors ligne. Les réponses utilisent ensuite les mêmes headers lors de l'envoi afin que MailDesk et les autres clients compatibles regroupent le fil de manière cohérente.
 
 La liste de courrier affiche une seule ligne par conversation avec un compteur. Le volet de lecture affiche ensuite chaque message sous forme de carte repliable, avec le message le plus récent ouvert en premier. Les anciennes bases SQLite sont migrées automatiquement et les métadonnées déjà présentes dans `remote_payload` sont récupérées au démarrage.
 
@@ -127,7 +127,7 @@ Les modèles sont stockés localement dans SQLite, synchronisés avec Supabase l
 
 Le bouton **Calendrier** de la barre latérale ouvre l'agenda local MailDesk. Chaque événement peut contenir un titre, un début, une fin, un lieu, une description et des participants.
 
-MailDesk sait importer un fichier `.ics` contenant des événements `VEVENT` et exporter l'agenda local dans un fichier iCalendar compatible avec Outlook, Google Calendar, Apple Calendar et les autres logiciels prenant en charge ICS.
+MailDesk sait importer un fichier `.ics` contenant des événements `VEVENT` et exporter l'agenda local dans un fichier iCalendar compatible avec les logiciels prenant en charge le standard ICS.
 
 ### Multi-fenêtres
 
@@ -205,11 +205,11 @@ Le volet de lecture possède maintenant une barre d'onglets au-dessus de sa barr
 
 Plusieurs rédactions peuvent donc rester ouvertes simultanément. Cliquer sur un onglet restaure son destinataire, son objet, son contenu, ses pièces jointes et son contexte de réponse/transfert. Fermer un onglet de rédaction conserve son brouillon ; la disquette **Brouillon** permet de le sauvegarder immédiatement. Démarrer un nouveau message ne remplace plus une réponse ou un transfert déjà ouvert.
 
-### Liste Outlook, regroupements et sélection multiple
+### Liste des messages, regroupements et sélection multiple
 
 La liste de courrier peut être regroupée selon plusieurs modes :
 
-- **Outlook** : Épinglés, Aujourd’hui, Hier, Cette semaine, La semaine dernière, Ce mois-ci, Le mois dernier et Plus ancien ;
+- **Chronologique** : Épinglés, Aujourd’hui, Hier, Cette semaine, La semaine dernière, Ce mois-ci, Le mois dernier et Plus ancien ;
 - **Jour** : une section par date ;
 - **Semaine** : une section par semaine ;
 - **Mois** : une section par mois ;
@@ -221,7 +221,7 @@ Chaque ligne dispose aussi d’actions rapides pour lu/non lu, drapeau **Importa
 
 ### Apparence et thèmes
 
-L'onglet **Paramètres > Apparence** permet de personnaliser la couleur principale de MailDesk. Plusieurs préréglages sont fournis (Outlook, Violet, Émeraude, Orange, Rose et Ardoise) et un sélecteur permet d'utiliser n'importe quelle couleur hexadécimale.
+L'onglet **Paramètres > Apparence** permet de personnaliser la couleur principale de MailDesk. Plusieurs préréglages sont fournis (Bleu, Violet, Émeraude, Orange, Rose et Ardoise) et un sélecteur permet d'utiliser n'importe quelle couleur hexadécimale.
 
 Le thème est prévisualisé immédiatement. La disquette de l'onglet enregistre la couleur dans les paramètres chiffrés ; fermer les paramètres sans enregistrer restaure le thème précédent. La couleur est également appliquée aux fenêtres de lecture détachées.
 

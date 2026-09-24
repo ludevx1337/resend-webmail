@@ -59,7 +59,7 @@ type SystemFolder = "inbox" | "drafts" | "sent" | "outbox" | "starred" | "archiv
 type Folder = SystemFolder | `custom:${string}`;
 type ViewFilter = "all" | "unread" | "read" | "starred" | "flagged" | "pinned";
 type SortDirection = "newest" | "oldest";
-type GroupMode = "outlook" | "day" | "week" | "month" | "none";
+type GroupMode = "smart" | "day" | "week" | "month" | "none";
 type ReadingTab = "mail" | "compose";
 type ComposeKind = "new" | "reply" | "replyAll" | "forward" | "draft";
 
@@ -291,7 +291,7 @@ const EMPTY_COMPOSE: ComposeState = {
 
 const REFRESH_INTERVALS = [5, 10, 30, 60, 300, 600, 1800, 3600] as const;
 const THEME_PRESETS = [
-  { name: "Outlook", color: "#0f6cbd" },
+  { name: "Bleu", color: "#0f6cbd" },
   { name: "Violet", color: "#7c3aed" },
   { name: "Émeraude", color: "#059669" },
   { name: "Orange", color: "#ea580c" },
@@ -664,7 +664,7 @@ function mailGroupLabel(createdAt: string | undefined, mode: GroupMode, pinned =
     return date.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
   }
 
-  if (mode === "outlook") {
+  if (mode === "smart") {
     if (daysAgo === 0) return "Aujourd’hui";
     if (daysAgo === 1) return "Hier";
     const weekStart = startOfLocalWeek(now);
@@ -698,7 +698,7 @@ export default function Home() {
   const [viewFilter, setViewFilter] = useState<ViewFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [sortDirection, setSortDirection] = useState<SortDirection>("newest");
-  const [groupMode, setGroupMode] = useState<GroupMode>("outlook");
+  const [groupMode, setGroupMode] = useState<GroupMode>("smart");
   const [collapsedMailGroups, setCollapsedMailGroups] = useState<string[]>([]);
   const [multiSelectEnabled, setMultiSelectEnabled] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -4151,7 +4151,7 @@ export default function Home() {
                   <label>
                     <CalendarDays size={13} /><span>Regrouper</span><ChevronDown size={13} />
                     <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as GroupMode)}>
-                      <option value="outlook">Outlook</option>
+                      <option value="smart">Chronologique</option>
                       <option value="day">Par jour</option>
                       <option value="week">Par semaine</option>
                       <option value="month">Par mois</option>
@@ -4246,7 +4246,7 @@ export default function Home() {
                   return (
                     <button
                       key={mail.id}
-                      className={`mail-row outlook-mail-row ${unread ? "unread" : ""} ${active ? "selected" : ""} ${multiSelected ? "multi-selected" : ""} ${pinned ? "is-pinned" : ""} ${flagged ? "is-flagged" : ""} ${queued ? "queued" : ""}`}
+                      className={`mail-row message-list-row ${unread ? "unread" : ""} ${active ? "selected" : ""} ${multiSelected ? "multi-selected" : ""} ${pinned ? "is-pinned" : ""} ${flagged ? "is-flagged" : ""} ${queued ? "queued" : ""}`}
                       draggable={!queued && !draftItem && !multiSelectEnabled}
                       onDragStart={(event) => {
                         if (queued || draftItem || multiSelectEnabled) return;
@@ -4385,7 +4385,7 @@ export default function Home() {
           {activeReadingTab === "compose" && composeOpen ? renderComposePane() : !selected ? (
             folder === "outbox"
               ? <div className="reading-empty"><div className="mail-illustration"><Clock3 size={48} /></div><h2>Boîte d’envoi</h2><p>Les messages en attente sont renvoyés automatiquement. Cliquez sur un message pour le modifier, ou utilisez l’icône de retry.</p></div>
-              : <div className="reading-empty"><div className="mail-illustration"><Mail size={48} /></div><h2>Sélectionnez un message</h2><p>Clic droit pour afficher toutes les actions, comme dans Outlook.</p></div>
+              : <div className="reading-empty"><div className="mail-illustration"><Mail size={48} /></div><h2>Sélectionnez un message</h2><p>Clic droit pour afficher toutes les actions disponibles.</p></div>
           ) : detailLoading ? (
             <div className="detail-loading"><div /><div /><div /></div>
           ) : detail ? (
@@ -4519,7 +4519,7 @@ export default function Home() {
               ) : (
                 <article className="message-detail">
                   <h2>{detail.subject || "(Sans objet)"}</h2>
-                  <div className="sender-card outlook-sender-card">
+                  <div className="sender-card message-sender-card">
                     <div className="sender-avatar">{senderName(detail.from).slice(0, 2).toUpperCase()}</div>
                     <div className="sender-meta">
                       <strong>{senderName(detail.from)}</strong>

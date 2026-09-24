@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { app, safeStorage } = require("electron");
 
-const SETTINGS_VERSION = 7;
+const SETTINGS_VERSION = 8;
 
 function normalizeIdentities(value, legacyFrom = "", legacySignature = "") {
   const input = Array.isArray(value) ? value : [];
@@ -57,6 +57,7 @@ function defaults() {
     supabaseKey: "",
     supabaseProjectRef: "",
     supabaseManagementToken: "",
+    supabaseAuthEmail: "",
     mobileApiUrl: "",
     autoUpdateEnabled: false,
     updateManifestUrl: "",
@@ -120,6 +121,7 @@ function effectiveSettings() {
     supabaseKey: stored.supabaseKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_ANON_KEY || "",
     supabaseProjectRef: stored.supabaseProjectRef || process.env.SUPABASE_PROJECT_REF || "",
     supabaseManagementToken: stored.supabaseManagementToken || process.env.SUPABASE_ACCESS_TOKEN || "",
+    supabaseAuthEmail: stored.supabaseAuthEmail || "",
     mobileApiUrl: stored.mobileApiUrl || process.env.MAILDESK_PUBLIC_API_URL || "",
     autoUpdateEnabled: Boolean(stored.autoUpdateEnabled),
     updateManifestUrl: stored.updateManifestUrl || process.env.MAILDESK_UPDATE_MANIFEST_URL || "",
@@ -178,6 +180,9 @@ function saveStoredSettings(input) {
     supabaseManagementToken: typeof input?.supabaseManagementToken === "string" && input.supabaseManagementToken.trim()
       ? input.supabaseManagementToken.trim()
       : current.supabaseManagementToken,
+    supabaseAuthEmail: typeof input?.supabaseAuthEmail === "string"
+      ? input.supabaseAuthEmail.trim().toLowerCase()
+      : current.supabaseAuthEmail,
     mobileApiUrl: typeof input?.mobileApiUrl === "string"
       ? input.mobileApiUrl.trim().replace(/\/$/, "")
       : current.mobileApiUrl,
@@ -235,6 +240,7 @@ function publicSettings() {
     hasApiKey: Boolean(current.apiKey),
     hasSupabaseKey: Boolean(current.supabaseKey),
     hasSupabaseManagementToken: Boolean(current.supabaseManagementToken),
+    supabaseAuthEmail: current.supabaseAuthEmail || "",
     mobileApiUrl: current.mobileApiUrl || "",
     autoUpdateEnabled: Boolean(current.autoUpdateEnabled),
     updateManifestUrl: current.updateManifestUrl || "",
