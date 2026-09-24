@@ -229,6 +229,7 @@ async function getMobileProvisioning(settings) {
     supabaseUrl,
     supabasePublishableKey: publishableKey,
     apiUrl,
+    authEmail: authEmailFromSettings(settings),
   };
 
   return {
