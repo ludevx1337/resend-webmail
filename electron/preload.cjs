@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("maildesk", {
   getMobileProvisioning: () => ipcRenderer.invoke("maildesk:mobile-provisioning"),
   getMobileProvisioningStatus: () => ipcRenderer.invoke("maildesk:mobile-provisioning-status"),
   deployMobileEdgeFunction: () => ipcRenderer.invoke("maildesk:supabase-edge-deploy"),
+  createMobileAuthUser: (input) => ipcRenderer.invoke("maildesk:supabase-auth-user-create", input),
   saveSettings: (settings) => ipcRenderer.invoke("maildesk:save-settings", settings),
   initializeSupabase: (settings) => ipcRenderer.invoke("maildesk:supabase-initialize", settings),
   notifyNewMail: (payload) => ipcRenderer.invoke("maildesk:notify-new-mail", payload),

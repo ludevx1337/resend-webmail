@@ -450,15 +450,17 @@ Le renderer utilise `contextIsolation: true`, `nodeIntegration: false`, `sandbox
 
 MailDesk expose maintenant les mêmes routes Resend au client Expo, sans exposer les secrets du desktop. En exécution locale Electron, les routes continuent de fonctionner comme avant. En environnement hébergé (Vercel ou `MAILDESK_REQUIRE_REMOTE_AUTH=1`), chaque requête `/api/mail/*` et `/api/mobile/*` exige une session Supabase valide.
 
-Le backend valide le bearer token auprès de Supabase Auth puis vérifie une allowlist serveur :
+Le backend valide le bearer token auprès de Supabase Auth. Les comptes créés ou liés depuis **MailDesk Desktop > Paramètres > Supabase** reçoivent le droit serveur `app_metadata.maildesk_access=true`. Cette métadonnée est réservée aux opérations administrateur et sert de contrôle d'accès principal à l'Edge Function.
+
+Les allowlists restent disponibles comme mécanisme de secours ou pour autoriser des comptes existants sans passer par le Desktop :
 
 ```env
+# optionnels
 MAILDESK_MOBILE_ALLOWED_EMAILS=utilisateur@entreprise.fr
-# ou
 MAILDESK_MOBILE_ALLOWED_USER_IDS=uuid-supabase
 ```
 
-Au moins une des deux allowlists est obligatoire en mode distant. Les variables serveur nécessaires sont documentées dans `mobile-server.env.example`.
+Les variables serveur sont documentées dans `mobile-server.env.example`.
 
 L'application Expo utilise uniquement des valeurs publiques : URL Supabase, clé `publishable`/`anon` et URL de l’Edge Function MailDesk. `RESEND_API_KEY`, les clés Supabase `service_role` / `sb_secret` et le token Management API ne doivent jamais être copiés dans l'APK ou l'IPA.
 
@@ -466,11 +468,13 @@ L'application Expo utilise uniquement des valeurs publiques : URL Supabase, clé
 
 Dans **Paramètres > Supabase**, aucune URL de backend mobile supplémentaire n'est nécessaire lorsque MailDesk utilise Supabase Edge. L'URL est calculée automatiquement sous la forme `https://<project-ref>.supabase.co/functions/v1/maildesk-api`. Le wiki intégré permet de créer/réparer les tables et de **créer / mettre à jour l’API Edge** depuis le token Management API. Le source embarqué est `supabase/functions/maildesk-api/index.ts`.
 
-L’Edge Function requiert les secrets `RESEND_API_KEY`, `RESEND_FROM` et au moins une allowlist `MAILDESK_MOBILE_ALLOWED_EMAILS` ou `MAILDESK_MOBILE_ALLOWED_USER_IDS`. `MAILDESK_MOBILE_SIGNATURE_HTML` reste optionnel. Ces valeurs se configurent dans Supabase Edge Functions > Secrets et ne sont jamais placées dans le QR.
+L’Edge Function requiert uniquement les secrets `RESEND_API_KEY` et `RESEND_FROM`. `MAILDESK_MOBILE_ALLOWED_EMAILS`, `MAILDESK_MOBILE_ALLOWED_USER_IDS` et `MAILDESK_MOBILE_SIGNATURE_HTML` sont optionnels. Ces valeurs se configurent dans Supabase Edge Functions > Secrets et ne sont jamais placées dans le QR.
 
-Le bouton **QR de connexion mobile** récupère automatiquement la clé Supabase publishable/anon depuis le projet et génère localement un QR versionné `maildesk.mobile.provision/v1`. Le même QR est accessible depuis l'icône **QR code** à côté du statut Resend en bas à gauche. Le QR contient uniquement l'URL Supabase, la clé publique client et l'URL Edge calculée ; il ne contient aucun mot de passe, aucune clé Resend et aucune clé Supabase secrète.
+La même page Supabase permet de **créer ou lier le compte Supabase Auth utilisé par MailDesk Mobile**. L'adresse de l'identité Resend par défaut est proposée automatiquement et reste modifiable. Deux modes sont disponibles : mot de passe fort généré par MailDesk et affiché une seule fois, ou invitation/récupération Supabase pour laisser l'utilisateur définir lui-même son mot de passe. Dans **Supabase > Authentication > URL Configuration**, ajoutez `maildesk://**` aux Redirect URLs afin que les invitations et réinitialisations reviennent dans l'application mobile.
 
-MailDesk Mobile scanne ce QR avec `expo-camera`, stocke la configuration dans SecureStore puis ouvre l'écran de connexion Supabase. Une même APK/IPA peut donc être provisionnée pour différents environnements sans rebuild.
+Le bouton **QR de connexion mobile** récupère automatiquement la clé Supabase publishable/anon depuis le projet et génère localement un QR versionné `maildesk.mobile.provision/v1`. Le QR contient l'URL Supabase, la clé publique client, l'URL Edge calculée et l'adresse e-mail Auth afin de préremplir l'écran de connexion. Il ne contient jamais le mot de passe, la clé Resend ni une clé Supabase secrète.
+
+MailDesk Mobile scanne ce QR avec `expo-camera`, stocke la configuration dans SecureStore puis ouvre l'écran de connexion Supabase. Le bouton **Mot de passe oublié ?** demande un e-mail de récupération Supabase ; le lien `maildesk://auth/set-password` revient dans l'application, établit la session de récupération et affiche l'écran permettant de choisir le nouveau mot de passe. Une même APK/IPA peut donc être provisionnée pour différents environnements sans rebuild.
 
 ### Pièces jointes : lien direct uniquement
 

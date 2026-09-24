@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 type RemoteUser = {
   id: string;
   email?: string;
+  app_metadata?: Record<string, unknown>;
 };
 
 function isHostedMode() {
@@ -83,19 +84,10 @@ export async function authorizeMailRequest(request: NextRequest | Request) {
   const allowedEmails = allowedValues("MAILDESK_MOBILE_ALLOWED_EMAILS");
   const allowedUserIds = allowedValues("MAILDESK_MOBILE_ALLOWED_USER_IDS");
 
-  if (!allowedEmails.size && !allowedUserIds.size) {
-    return {
-      ok: false as const,
-      response: NextResponse.json(
-        { error: "MailDesk mobile allowlist is not configured." },
-        { status: 503 },
-      ),
-    };
-  }
-
   const email = String(user.email || "").toLowerCase();
   const id = String(user.id || "").toLowerCase();
-  if (!allowedEmails.has(email) && !allowedUserIds.has(id)) {
+  const metadataAccess = user.app_metadata?.maildesk_access === true;
+  if (!metadataAccess && !allowedEmails.has(email) && !allowedUserIds.has(id)) {
     return {
       ok: false as const,
       response: NextResponse.json({ error: "This account is not allowed to use MailDesk mobile." }, { status: 403 }),

@@ -76,16 +76,18 @@ async function authorize(request: Request) {
     return { ok: false as const, response: json({ error: "Invalid or expired session." }, 401) };
   }
 
-  const user = await response.json() as { id?: string; email?: string };
+  const user = await response.json() as {
+    id?: string;
+    email?: string;
+    app_metadata?: Record<string, unknown>;
+  };
   const emails = splitCsv(env("MAILDESK_MOBILE_ALLOWED_EMAILS"));
   const ids = splitCsv(env("MAILDESK_MOBILE_ALLOWED_USER_IDS"));
-  if (!emails.size && !ids.size) {
-    return { ok: false as const, response: json({ error: "MailDesk mobile allowlist is not configured." }, 503) };
-  }
-
   const email = String(user.email || "").toLowerCase();
   const id = String(user.id || "").toLowerCase();
-  if (!emails.has(email) && !ids.has(id)) {
+  const metadataAccess = user.app_metadata?.maildesk_access === true;
+
+  if (!metadataAccess && !emails.has(email) && !ids.has(id)) {
     return { ok: false as const, response: json({ error: "This account is not allowed to use MailDesk mobile." }, 403) };
   }
 

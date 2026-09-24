@@ -91,13 +91,13 @@ async function findUserByEmail(settings, email) {
 }
 
 async function updateMobileAccess(settings, user, password = "") {
-  const currentMetadata = user?.user_metadata && typeof user.user_metadata === "object"
-    ? user.user_metadata
+  const currentMetadata = user?.app_metadata && typeof user.app_metadata === "object"
+    ? user.app_metadata
     : {};
   const { response, body } = await authRequest(settings, `/admin/users/${encodeURIComponent(user.id)}`, {
     method: "PUT",
     body: JSON.stringify({
-      user_metadata: {
+      app_metadata: {
         ...currentMetadata,
         maildesk_access: true,
         maildesk_source: "desktop",
@@ -143,7 +143,7 @@ async function createMobileAuthUser(settings, input = {}) {
           email,
           password,
           email_confirm: true,
-          user_metadata: {
+          app_metadata: {
             maildesk_access: true,
             maildesk_source: "desktop",
           },
@@ -187,13 +187,7 @@ async function createMobileAuthUser(settings, input = {}) {
     `/invite?redirect_to=${encodeURIComponent(MOBILE_PASSWORD_REDIRECT)}`,
     {
       method: "POST",
-      body: JSON.stringify({
-        email,
-        data: {
-          maildesk_access: true,
-          maildesk_source: "desktop",
-        },
-      }),
+      body: JSON.stringify({ email }),
     },
   );
   if (!response.ok) {
@@ -201,6 +195,7 @@ async function createMobileAuthUser(settings, input = {}) {
   }
 
   const user = body?.user || body;
+  if (user?.id) await updateMobileAccess(settings, user);
   return {
     ok: true,
     mode,

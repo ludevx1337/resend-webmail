@@ -237,6 +237,7 @@ declare global {
         themeColor: string;
         supabaseUrl: string;
         supabaseProjectRef: string;
+        supabaseAuthEmail: string;
         mobileApiUrl: string;
         hasApiKey: boolean;
         hasSupabaseKey: boolean;
@@ -253,6 +254,7 @@ declare global {
           supabaseUrl: string;
           supabasePublishableKey: string;
           apiUrl: string;
+          authEmail?: string;
         };
         encoded: string;
         projectRef: string;
@@ -274,6 +276,18 @@ declare global {
         status?: string;
         message: string;
       }>;
+      createMobileAuthUser: (input: {
+        email: string;
+        mode: "generated" | "invite";
+      }) => Promise<{
+        ok: boolean;
+        mode: "generated" | "invite";
+        email: string;
+        userId: string;
+        generatedPassword: string;
+        existing: boolean;
+        message: string;
+      }>;
       saveSettings: (settings: {
         from?: string;
         apiKey?: string;
@@ -286,6 +300,7 @@ declare global {
         supabaseKey?: string;
         supabaseProjectRef?: string;
         supabaseManagementToken?: string;
+        supabaseAuthEmail?: string;
         mobileApiUrl?: string;
         autoUpdateEnabled?: boolean;
         updateManifestUrl?: string;
@@ -298,6 +313,7 @@ declare global {
         themeColor: string;
         supabaseUrl: string;
         supabaseProjectRef: string;
+        supabaseAuthEmail: string;
         mobileApiUrl: string;
         hasApiKey: boolean;
         hasSupabaseKey: boolean;
@@ -317,6 +333,7 @@ declare global {
         supabaseKey?: string;
         supabaseProjectRef?: string;
         supabaseManagementToken?: string;
+        supabaseAuthEmail?: string;
         mobileApiUrl?: string;
       }) => Promise<{
         ok: boolean;

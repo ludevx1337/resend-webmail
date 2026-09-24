@@ -548,6 +548,28 @@ button { color: inherit; }
 .supabase-actions button.primary-outline { border-color: var(--brand); color: var(--brand); background: #f7fbff; }
 .supabase-actions button:hover:not(:disabled) { background: #eef6fc; }
 .supabase-actions button:disabled { opacity: .55; cursor: not-allowed; }
+.supabase-auth-card { display: grid; gap: 11px; padding: 13px; border: 1px solid #d6e2ec; border-radius: 9px; background: #fbfdff; }
+.supabase-auth-head { display: grid; grid-template-columns: 34px minmax(0,1fr); align-items: center; gap: 9px; }
+.supabase-auth-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; background: var(--brand-soft); color: var(--brand); }
+.supabase-auth-head > div:last-child { display: grid; gap: 2px; }
+.supabase-auth-head strong { color: #30485c; font-size: 12px; }
+.supabase-auth-head span { color: #687a8b; font-size: 9px; line-height: 1.45; }
+.supabase-auth-modes { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+.supabase-auth-modes > label { display: grid; grid-template-columns: 18px minmax(0,1fr); align-items: start; gap: 7px; padding: 9px; border: 1px solid #dbe4eb; border-radius: 7px; background: #fff; cursor: pointer; }
+.supabase-auth-modes > label.selected { border-color: color-mix(in srgb, var(--brand) 55%, #dbe4eb); background: var(--brand-soft); }
+.supabase-auth-modes input { width: 15px !important; height: 15px !important; margin: 1px 0 0; padding: 0 !important; accent-color: var(--brand); }
+.supabase-auth-modes span { display: grid; gap: 2px; }
+.supabase-auth-modes strong { color: #34495e; font-size: 10px; }
+.supabase-auth-modes small { color: #708191; font-size: 9px; line-height: 1.4; }
+.supabase-generated-password { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 10px; border: 1px solid #cfe0ed; border-radius: 7px; background: #f2f8fc; }
+.supabase-generated-password > div { min-width: 0; display: grid; gap: 4px; }
+.supabase-generated-password strong { color: #31506a; font-size: 10px; }
+.supabase-generated-password code { overflow-wrap: anywhere; padding: 5px 7px; border-radius: 5px; background: #fff; color: #1f4f72; font: 10px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.supabase-generated-password small { color: #758493; font-size: 8px; line-height: 1.4; }
+.supabase-generated-password button { min-height: 32px; padding: 0 10px; border: 1px solid #cbd8e2; border-radius: 6px; background: #fff; color: var(--brand); cursor: pointer; }
+.supabase-auth-message { padding: 8px 10px; border-radius: 6px; background: #f5f8fa; color: #53687a; font-size: 10px; line-height: 1.45; }
+.security-note.compact-note { padding: 8px 10px; }
+.security-note.compact-note code { font: 9px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .edge-api-summary code { overflow-wrap: anywhere; padding: 5px 7px; border: 1px solid #d6e4ef; border-radius: 5px; background: #fff; color: #33536d; font: 9px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .edge-wiki { overflow: hidden; border: 1px solid #d7e1e9; border-radius: 8px; background: #fbfcfd; }
 .edge-wiki > summary { min-height: 42px; display: grid; grid-template-columns: 20px 1fr 18px; align-items: center; gap: 8px; padding: 0 12px; color: #354d61; cursor: pointer; list-style: none; font-size: 11px; font-weight: 800; }
@@ -576,7 +598,7 @@ button { color: inherit; }
 .mobile-provisioning-copy strong { color: #2f465a; font-size: 13px; }
 .mobile-provisioning-copy span { font-size: 10px; line-height: 1.45; }
 .mobile-provisioning-copy small { margin-top: 4px; color: #7d8b98; font-size: 9px; line-height: 1.45; }
-@media (max-width: 720px) { .mobile-provisioning-card { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .mobile-provisioning-card { grid-template-columns: 1fr; } .supabase-auth-modes { grid-template-columns: 1fr; } .supabase-generated-password { grid-template-columns: 1fr; } }
 .settings-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 3px; }
 .settings-actions button { min-height: 36px; padding: 0 14px; border: 1px solid #d4dce4; border-radius: 6px; background: #fff; cursor: pointer; }
 .settings-actions button.primary { border-color: var(--brand); background: var(--brand); color: #fff; font-weight: 700; }

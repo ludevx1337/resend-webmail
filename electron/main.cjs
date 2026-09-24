@@ -66,6 +66,7 @@ const {
 } = require("./db.cjs");
 const { syncWithSupabase } = require("./sync.cjs");
 const { deployMobileEdgeFunction, getMobileProvisioning, getMobileProvisioningStatus, initializeSupabase } = require("./supabase-provision.cjs");
+const { createMobileAuthUser } = require("./supabase-auth.cjs");
 const { checkForUpdate } = require("./updater.cjs");
 
 let mainWindow = null;
@@ -1073,6 +1074,12 @@ ipcMain.handle("maildesk:get-settings", () => ({
 ipcMain.handle("maildesk:mobile-provisioning", async () => getMobileProvisioning(effectiveSettings()));
 ipcMain.handle("maildesk:mobile-provisioning-status", () => getMobileProvisioningStatus(effectiveSettings()));
 ipcMain.handle("maildesk:supabase-edge-deploy", async () => deployMobileEdgeFunction(effectiveSettings()));
+ipcMain.handle("maildesk:supabase-auth-user-create", async (_event, input) => {
+  const result = await createMobileAuthUser(effectiveSettings(), input || {});
+  saveStoredSettings({ supabaseAuthEmail: result.email });
+  applyStoredSettings();
+  return result;
+});
 ipcMain.handle("maildesk:save-settings", async (_event, input) => {
   let saved = saveStoredSettings(input);
   applyStoredSettings();

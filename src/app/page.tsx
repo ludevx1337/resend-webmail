@@ -304,6 +304,12 @@ function normalizeThemeColor(value: string) {
   return /^#[0-9a-f]{6}$/i.test(color) ? color : "#0f6cbd";
 }
 
+function extractEmailAddress(value: string) {
+  const raw = String(value || "").trim();
+  const bracket = raw.match(/<([^<>\s]+@[^<>\s]+)>/);
+  return String(bracket?.[1] || raw).trim().toLowerCase();
+}
+
 function refreshIntervalLabel(seconds: number) {
   if (seconds < 60) return `${seconds} s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
@@ -805,8 +811,13 @@ export default function Home() {
   const [settingsSupabaseKey, setSettingsSupabaseKey] = useState("");
   const [settingsSupabaseProjectRef, setSettingsSupabaseProjectRef] = useState("");
   const [settingsSupabaseManagementToken, setSettingsSupabaseManagementToken] = useState("");
+  const [settingsSupabaseAuthEmail, setSettingsSupabaseAuthEmail] = useState("");
   const [settingsHasSupabaseKey, setSettingsHasSupabaseKey] = useState(false);
   const [settingsHasSupabaseManagementToken, setSettingsHasSupabaseManagementToken] = useState(false);
+  const [supabaseAuthMode, setSupabaseAuthMode] = useState<"invite" | "generated">("invite");
+  const [supabaseAuthBusy, setSupabaseAuthBusy] = useState(false);
+  const [supabaseAuthMessage, setSupabaseAuthMessage] = useState("");
+  const [supabaseGeneratedPassword, setSupabaseGeneratedPassword] = useState("");
   const [mobileProvisioningQr, setMobileProvisioningQr] = useState("");
   const [mobileProvisioningProjectRef, setMobileProvisioningProjectRef] = useState("");
   const [mobileProvisioningConfigured, setMobileProvisioningConfigured] = useState(false);
@@ -878,6 +889,7 @@ export default function Home() {
     supabase: JSON.stringify({
       url: settingsSupabaseUrl.trim(),
       projectRef: settingsSupabaseProjectRef.trim(),
+      authEmail: settingsSupabaseAuthEmail.trim().toLowerCase(),
       keyChanged: Boolean(settingsSupabaseKey.trim()),
       managementTokenChanged: Boolean(settingsSupabaseManagementToken.trim()),
     }),
@@ -3222,6 +3234,8 @@ export default function Home() {
 
   function closeSettings() {
     setSettingsThemeColor(themeColor);
+    setSupabaseGeneratedPassword("");
+    setSupabaseAuthMessage("");
     setSettingsOpen(false);
   }
 
@@ -3231,6 +3245,9 @@ export default function Home() {
     setSettingsApiKey("");
     setSettingsSupabaseKey("");
     setSettingsSupabaseManagementToken("");
+    setSupabaseAuthMode("invite");
+    setSupabaseAuthMessage("");
+    setSupabaseGeneratedPassword("");
     setSettingsTab("account");
     resetRuleBuilder();
     resetTemplateEditor();
@@ -3265,6 +3282,7 @@ export default function Home() {
         const loadedTheme = normalizeThemeColor(current.themeColor || "#0f6cbd");
         const loadedSupabaseUrl = current.supabaseUrl || "";
         const loadedProjectRef = current.supabaseProjectRef || "";
+        const loadedAuthEmail = current.supabaseAuthEmail || extractEmailAddress(loadedFrom);
         const loadedUpdateEnabled = Boolean(current.autoUpdateEnabled);
         const loadedManifestUrl = current.updateManifestUrl || "";
 
@@ -3274,6 +3292,7 @@ export default function Home() {
         setSettingsSignature(loadedSignature);
         setSettingsSupabaseUrl(loadedSupabaseUrl);
         setSettingsSupabaseProjectRef(loadedProjectRef);
+        setSettingsSupabaseAuthEmail(loadedAuthEmail);
         setMobileProvisioningQr("");
         setMobileProvisioningProjectRef("");
         setSettingsHasSupabaseKey(current.hasSupabaseKey);
@@ -3317,6 +3336,7 @@ export default function Home() {
           supabase: JSON.stringify({
             url: loadedSupabaseUrl.trim(),
             projectRef: loadedProjectRef.trim(),
+            authEmail: loadedAuthEmail.trim().toLowerCase(),
             keyChanged: false,
             managementTokenChanged: false,
           }),
@@ -3390,6 +3410,58 @@ export default function Home() {
     }
   }
 
+  async function createSupabaseMobileUser() {
+    if (!window.maildesk) return;
+    if (settingsSnapshots.supabase !== settingsBaselines.supabase) {
+      setSupabaseAuthMessage("Enregistrez d’abord la configuration Supabase avec la disquette.");
+      return;
+    }
+    const email = settingsSupabaseAuthEmail.trim().toLowerCase();
+    if (!email) {
+      setSupabaseAuthMessage("Renseignez l’adresse e-mail du compte mobile.");
+      return;
+    }
+
+    setSupabaseAuthBusy(true);
+    setSupabaseAuthMessage("Création / liaison du compte Supabase Auth…");
+    setSupabaseGeneratedPassword("");
+    try {
+      const result = await window.maildesk.createMobileAuthUser({
+        email,
+        mode: supabaseAuthMode,
+      });
+      setSettingsSupabaseAuthEmail(result.email);
+      setSupabaseGeneratedPassword(result.generatedPassword || "");
+      setSupabaseAuthMessage(result.message);
+      setMobileProvisioningQr("");
+      setSettingsBaselines((current) => ({
+        ...current,
+        supabase: JSON.stringify({
+          url: settingsSupabaseUrl.trim(),
+          projectRef: settingsSupabaseProjectRef.trim(),
+          authEmail: result.email.trim().toLowerCase(),
+          keyChanged: false,
+          managementTokenChanged: false,
+        }),
+      }));
+      await refreshMobileProvisioningStatus();
+    } catch (err) {
+      setSupabaseAuthMessage(err instanceof Error ? err.message : "Impossible de créer le compte Supabase Auth.");
+    } finally {
+      setSupabaseAuthBusy(false);
+    }
+  }
+
+  async function copySupabaseGeneratedPassword() {
+    if (!supabaseGeneratedPassword) return;
+    try {
+      await navigator.clipboard.writeText(supabaseGeneratedPassword);
+      setSupabaseAuthMessage("Mot de passe copié dans le presse-papiers.");
+    } catch {
+      setSupabaseAuthMessage("Impossible de copier automatiquement le mot de passe.");
+    }
+  }
+
   async function deployMobileEdgeFromSettings() {
     if (!window.maildesk) return;
     if (settingsSnapshots.supabase !== settingsBaselines.supabase) {
@@ -3449,6 +3521,7 @@ export default function Home() {
         supabaseKey: settingsSupabaseKey || undefined,
         supabaseProjectRef: settingsSupabaseProjectRef,
         supabaseManagementToken: settingsSupabaseManagementToken || undefined,
+        supabaseAuthEmail: settingsSupabaseAuthEmail,
       });
       setSettingsHasSupabaseKey(result.hasSupabaseKey);
       setSettingsHasSupabaseManagementToken(result.hasSupabaseManagementToken);
@@ -3466,6 +3539,7 @@ export default function Home() {
         supabase: JSON.stringify({
           url: settingsSupabaseUrl.trim(),
           projectRef: savedProjectRef.trim(),
+          authEmail: settingsSupabaseAuthEmail.trim().toLowerCase(),
           keyChanged: false,
           managementTokenChanged: false,
         }),
@@ -3635,6 +3709,7 @@ export default function Home() {
           supabaseKey: settingsSupabaseKey || undefined,
           supabaseProjectRef: settingsSupabaseProjectRef,
           supabaseManagementToken: settingsSupabaseManagementToken || undefined,
+          supabaseAuthEmail: settingsSupabaseAuthEmail,
         });
         const savedRef = result.supabaseProjectRef || settingsSupabaseProjectRef;
         setSettingsHasSupabaseKey(result.hasSupabaseKey);
@@ -3647,6 +3722,7 @@ export default function Home() {
           supabase: JSON.stringify({
             url: settingsSupabaseUrl.trim(),
             projectRef: savedRef.trim(),
+            authEmail: settingsSupabaseAuthEmail.trim().toLowerCase(),
             keyChanged: false,
             managementTokenChanged: false,
           }),
@@ -5130,6 +5206,52 @@ export default function Home() {
                     <label className="settings-field"><span>Project Ref</span><input value={settingsSupabaseProjectRef} onChange={(event) => { setSettingsSupabaseProjectRef(event.target.value); setMobileProvisioningQr(""); }} placeholder="Détecté automatiquement depuis l’URL si possible" /></label>
                     <label className="settings-field"><span>Clé de synchronisation</span><input type="password" value={settingsSupabaseKey} onChange={(event) => { setSettingsSupabaseKey(event.target.value); setMobileProvisioningQr(""); }} placeholder={settingsHasSupabaseKey ? "Clé déjà enregistrée — laisser vide pour la conserver" : "service_role / sb_secret_…"} /></label>
                     <label className="settings-field"><span>Token Supabase Management API</span><input type="password" value={settingsSupabaseManagementToken} onChange={(event) => { setSettingsSupabaseManagementToken(event.target.value); setMobileProvisioningQr(""); }} placeholder={settingsHasSupabaseManagementToken ? "Token déjà enregistré — laisser vide pour la conserver" : "sbp_… : database_write + api_gateway_keys_read + edge_functions_write"} /></label>
+                    <div className="supabase-auth-card">
+                      <div className="supabase-auth-head">
+                        <div className="supabase-auth-icon"><UserRound size={17} /></div>
+                        <div>
+                          <strong>Compte utilisateur MailDesk Mobile</strong>
+                          <span>L’adresse Resend principale est proposée automatiquement, mais vous pouvez la modifier.</span>
+                        </div>
+                      </div>
+                      <label className="settings-field">
+                        <span>E-mail du compte Supabase Auth</span>
+                        <input
+                          type="email"
+                          value={settingsSupabaseAuthEmail}
+                          onChange={(event) => {
+                            setSettingsSupabaseAuthEmail(event.target.value);
+                            setSupabaseAuthMessage("");
+                            setSupabaseGeneratedPassword("");
+                            setMobileProvisioningQr("");
+                          }}
+                          placeholder={extractEmailAddress(settingsFrom) || "vous@entreprise.fr"}
+                        />
+                      </label>
+                      <div className="supabase-auth-modes">
+                        <label className={supabaseAuthMode === "invite" ? "selected" : ""}>
+                          <input type="radio" name="supabase-auth-mode" checked={supabaseAuthMode === "invite"} onChange={() => { setSupabaseAuthMode("invite"); setSupabaseGeneratedPassword(""); }} />
+                          <span><strong>L’utilisateur choisit son mot de passe</strong><small>Supabase envoie une invitation. Le lien ouvre MailDesk Mobile pour définir le mot de passe.</small></span>
+                        </label>
+                        <label className={supabaseAuthMode === "generated" ? "selected" : ""}>
+                          <input type="radio" name="supabase-auth-mode" checked={supabaseAuthMode === "generated"} onChange={() => { setSupabaseAuthMode("generated"); setSupabaseGeneratedPassword(""); }} />
+                          <span><strong>Générer un mot de passe</strong><small>MailDesk génère un mot de passe fort et l’affiche une seule fois. Si le compte existe déjà, il est régénéré.</small></span>
+                        </label>
+                      </div>
+                      <div className="supabase-actions">
+                        <button type="button" className="primary-outline" onClick={() => void createSupabaseMobileUser()} disabled={supabaseAuthBusy || !settingsSupabaseAuthEmail.trim() || !settingsSupabaseUrl || !(settingsSupabaseKey || settingsHasSupabaseKey)}>
+                          {supabaseAuthBusy ? "Création / liaison..." : "Créer / lier le compte mobile"}
+                        </button>
+                      </div>
+                      {supabaseGeneratedPassword && (
+                        <div className="supabase-generated-password">
+                          <div><strong>Mot de passe généré</strong><code>{supabaseGeneratedPassword}</code><small>Copiez-le maintenant : MailDesk ne le stocke pas dans sa configuration.</small></div>
+                          <button type="button" onClick={() => void copySupabaseGeneratedPassword()}>Copier</button>
+                        </div>
+                      )}
+                      {supabaseAuthMessage && <div className="supabase-auth-message">{supabaseAuthMessage}</div>}
+                      <div className="security-note compact-note"><strong>E-mails Auth & deep link</strong><span>Supabase Auth doit pouvoir envoyer les invitations/récupérations. Ajoutez <code>maildesk://**</code> dans Authentication → URL Configuration → Redirect URLs. Pour la production, configurez votre SMTP Supabase.</span></div>
+                    </div>
                     <div className="security-note edge-api-summary">
                       <strong>API mobile Supabase Edge</strong>
                       <span>L’URL n’a plus besoin d’être saisie : MailDesk la calcule automatiquement depuis l’URL du projet Supabase.</span>
@@ -5150,23 +5272,23 @@ export default function Home() {
                         </div>
                         <div className="edge-wiki-step">
                           <span className="edge-wiki-index">3</span>
-                          <div><strong>Secrets Edge requis</strong><p>À renseigner dans Supabase → Edge Functions → Secrets. Les secrets ne sont jamais intégrés au QR.</p><div className="edge-secret-list"><code>RESEND_API_KEY</code><code>RESEND_FROM</code><code>MAILDESK_MOBILE_ALLOWED_EMAILS</code><span>ou</span><code>MAILDESK_MOBILE_ALLOWED_USER_IDS</code><code className="optional">MAILDESK_MOBILE_SIGNATURE_HTML (optionnel)</code></div></div>
+                          <div><strong>Secrets Edge requis</strong><p>À renseigner dans Supabase → Edge Functions → Secrets. Le compte créé depuis MailDesk reçoit automatiquement l’accès mobile via son metadata Auth.</p><div className="edge-secret-list"><code>RESEND_API_KEY</code><code>RESEND_FROM</code><code className="optional">MAILDESK_MOBILE_ALLOWED_EMAILS (optionnel)</code><code className="optional">MAILDESK_MOBILE_ALLOWED_USER_IDS (optionnel)</code><code className="optional">MAILDESK_MOBILE_SIGNATURE_HTML (optionnel)</code></div></div>
                         </div>
                         <div className="edge-wiki-step">
                           <span className="edge-wiki-index">4</span>
-                          <div><strong>Permissions du token Management API</strong><p><code>database_write</code> pour les tables, <code>api_gateway_keys_read</code> pour la clé mobile et <code>edge_functions_write</code> pour déployer l’API Edge.</p></div>
+                          <div><strong>Permissions du token Management API</strong><p>Dans le token scoped : <strong>Database → READ-WRITE</strong>, <strong>API Keys → READ</strong> et <strong>Edge Functions → READ-WRITE</strong>. MailDesk n’a pas besoin de révéler les clés secrètes du projet.</p></div>
                         </div>
                         <div className="edge-wiki-step">
                           <span className="edge-wiki-index">5</span>
-                          <div><strong>Provisionnement mobile</strong><p>Une fois l’Edge Function et ses secrets prêts, générez le QR. Le mobile recevra automatiquement l’URL Edge calculée ; aucun backend séparé n’est nécessaire.</p></div>
+                          <div><strong>Provisionnement mobile</strong><p>Créez ou liez d’abord le compte Auth, ajoutez <code>maildesk://**</code> aux Redirect URLs, puis générez le QR. Le QR préremplit l’e-mail du compte mais ne contient jamais le mot de passe.</p></div>
                         </div>
                       </div>
                     </details>
-                    <div className="security-note"><strong>QR mobile sécurisé</strong><span>Le QR ne contient jamais la clé service_role / sb_secret. Il contient uniquement l’URL Supabase, la clé publishable/anon et l’URL Edge MailDesk calculée automatiquement.</span></div>
+                    <div className="security-note"><strong>QR mobile sécurisé</strong><span>Le QR ne contient jamais la clé service_role / sb_secret ni le mot de passe. Il contient l’URL Supabase, la clé publishable/anon, l’URL Edge et l’e-mail du compte mobile pour préremplir la connexion.</span></div>
                     {mobileProvisioningQr && (
                       <div className="mobile-provisioning-card">
                         <div className="mobile-provisioning-qr"><QRCodeSVG value={mobileProvisioningQr} size={196} level="M" marginSize={2} /></div>
-                        <div className="mobile-provisioning-copy"><strong>Scanner avec MailDesk Mobile</strong><span>Projet {mobileProvisioningProjectRef || settingsSupabaseProjectRef || "Supabase"}</span><span>Le téléphone enregistrera cette configuration dans son stockage sécurisé puis affichera directement la connexion.</span><small>Ce QR configure l’application ; il ne connecte pas automatiquement un utilisateur et ne contient aucun mot de passe.</small></div>
+                        <div className="mobile-provisioning-copy"><strong>Scanner avec MailDesk Mobile</strong><span>Projet {mobileProvisioningProjectRef || settingsSupabaseProjectRef || "Supabase"}</span><span>Le téléphone enregistrera cette configuration dans son stockage sécurisé puis affichera directement la connexion.</span><small>Ce QR configure l’application et préremplit l’e-mail {settingsSupabaseAuthEmail || "du compte"} ; il ne contient aucun mot de passe.</small></div>
                       </div>
                     )}
                   </section>
