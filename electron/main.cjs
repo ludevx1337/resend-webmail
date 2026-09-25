@@ -319,6 +319,14 @@ async function pollInboxInBackground() {
     inboxPollPrimed = true;
 
     if (newMessages.length === 0) {
+      try {
+        const sync = await syncWithSupabase(effectiveSettings());
+        if (sync?.configured) {
+          sendMainAction("inbox-updated", { count: 0, source: "supabase" });
+        }
+      } catch (error) {
+        console.warn("Background Supabase sync failed", error);
+      }
       return { ok: true, newMessages: 0, notified: 0 };
     }
 

@@ -166,6 +166,177 @@ function extractInlineImages(html?: string) {
   return { html: nextHtml.trim() || undefined, attachments };
 }
 
+
+function serviceRoleKey() {
+  return env("SUPABASE_SERVICE_ROLE_KEY");
+}
+
+async function supabaseAdmin(path: string, init: RequestInit = {}) {
+  const supabaseUrl = env("SUPABASE_URL").replace(/\/$/, "");
+  const key = serviceRoleKey();
+  if (!supabaseUrl || !key) {
+    return { ok: false, status: 503, data: { error: "Supabase service role is not configured." } };
+  }
+  const headers = new Headers(init.headers);
+  headers.set("apikey", key);
+  headers.set("Authorization", `Bearer ${key}`);
+  headers.set("Accept", "application/json");
+  if (init.body != null) headers.set("Content-Type", "application/json");
+  const response = await fetch(`${supabaseUrl}/rest/v1/${path}`, { ...init, headers });
+  const data = await response.json().catch(() => ({}));
+  return { ok: response.ok, status: response.status, data };
+}
+
+function base64SecretBytes(value: string) {
+  const normalized = value.replace(/^whsec_/, "").replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+async function verifyResendWebhook(request: Request, rawBody: string) {
+  const secret = env("RESEND_WEBHOOK_SECRET");
+  if (!secret) return false;
+  const id = request.headers.get("svix-id") || request.headers.get("webhook-id") || "";
+  const timestamp = request.headers.get("svix-timestamp") || request.headers.get("webhook-timestamp") || "";
+  const signatures = request.headers.get("svix-signature") || request.headers.get("webhook-signature") || "";
+  if (!id || !timestamp || !signatures) return false;
+
+  const seconds = Number(timestamp);
+  if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > 5 * 60) return false;
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    base64SecretBytes(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`${id}.${timestamp}.${rawBody}`),
+  );
+  const expected = btoa(String.fromCharCode(...new Uint8Array(signature)));
+  return signatures.split(/\s+/).some((candidate) => candidate === `v1,${expected}`);
+}
+
+async function sendExpoPushForMail(mail: {
+  id: string;
+  from?: string;
+  subject?: string;
+}) {
+  const tokens = await supabaseAdmin("maildesk_push_tokens?select=token&active=eq.true");
+  if (!tokens.ok || !Array.isArray(tokens.data) || !tokens.data.length) return;
+
+  const messages = tokens.data
+    .map((row) => String(row?.token || "").trim())
+    .filter((token) => token.startsWith("ExponentPushToken[") || token.startsWith("ExpoPushToken["))
+    .map((to) => ({
+      to,
+      sound: "default",
+      title: mail.from ? `Nouveau mail · ${mail.from}` : "Nouveau mail",
+      body: mail.subject || "(Sans objet)",
+      data: { mailId: mail.id, folder: "inbox", source: "resend" },
+      channelId: "maildesk-mail",
+    }));
+  if (!messages.length) return;
+
+  await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(messages),
+  });
+}
+
+async function handleResendWebhook(request: Request) {
+  const rawBody = await request.text();
+  if (!await verifyResendWebhook(request, rawBody)) {
+    return json({ error: "Invalid webhook signature." }, 401);
+  }
+
+  const event = JSON.parse(rawBody || "{}") as {
+    type?: string;
+    data?: {
+      email_id?: string;
+      created_at?: string;
+      from?: string;
+      to?: string[];
+      cc?: string[];
+      bcc?: string[];
+      message_id?: string;
+      subject?: string;
+      attachments?: unknown[];
+    };
+  };
+  if (event.type !== "email.received" || !event.data?.email_id) {
+    return json({ ok: true, ignored: true });
+  }
+
+  const mail = event.data;
+  const emailId = String(event.data.email_id);
+  const row = {
+    id: emailId,
+    direction: "inbound",
+    created_at: mail.created_at || new Date().toISOString(),
+    from_addr: mail.from || null,
+    to_json: mail.to || [],
+    cc_json: mail.cc || [],
+    bcc_json: mail.bcc || [],
+    reply_to_json: [],
+    subject: mail.subject || null,
+    message_id: mail.message_id || null,
+    headers_json: {},
+    references_json: [],
+    html: null,
+    text_body: null,
+    attachments_json: mail.attachments || [],
+    folder: "inbox",
+    is_read: false,
+    is_starred: false,
+    is_flagged: false,
+    is_pinned: false,
+    is_deleted: false,
+    updated_at: mail.created_at || new Date().toISOString(),
+  };
+
+  const stored = await supabaseAdmin("maildesk_messages?on_conflict=id", {
+    method: "POST",
+    headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+    body: JSON.stringify([row]),
+  });
+  if (!stored.ok) {
+    return json({ error: stored.data?.message || "Unable to store inbound mail." }, stored.status || 500);
+  }
+  if (Array.isArray(stored.data) && stored.data.length === 0) {
+    return json({ ok: true, duplicate: true });
+  }
+
+  await sendExpoPushForMail({
+    id: emailId,
+    from: mail.from,
+    subject: mail.subject,
+  });
+  return json({ ok: true });
+}
+
+async function syncedMobileProfile() {
+  const result = await supabaseAdmin("maildesk_profile?id=eq.default&select=default_from,signature_html&limit=1");
+  if (result.ok && Array.isArray(result.data) && result.data[0]) {
+    return {
+      defaultFrom: String(result.data[0].default_from || env("RESEND_FROM")),
+      signatureHtml: String(result.data[0].signature_html || ""),
+    };
+  }
+  return {
+    defaultFrom: env("RESEND_FROM"),
+    signatureHtml: env("MAILDESK_MOBILE_SIGNATURE_HTML"),
+  };
+}
+
 async function handleMail(request: Request, path: string) {
   if (request.method === "GET" && path === "/api/mail/inbox") {
     const result = await resend("/emails/receiving?limit=100");
@@ -286,15 +457,16 @@ async function handleMail(request: Request, path: string) {
 deno.serve(async (request: Request) => {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
 
+  const path = routePath(request);
+  if (request.method === "POST" && path === "/webhooks/resend") {
+    return handleResendWebhook(request);
+  }
+
   const auth = await authorize(request);
   if (!auth.ok) return auth.response;
 
-  const path = routePath(request);
   if (request.method === "GET" && path === "/api/mobile/profile") {
-    return json({
-      defaultFrom: env("RESEND_FROM"),
-      signatureHtml: env("MAILDESK_MOBILE_SIGNATURE_HTML"),
-    });
+    return json(await syncedMobileProfile());
   }
 
   const mailResponse = await handleMail(request, path);

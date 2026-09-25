@@ -163,8 +163,8 @@ async function createMobileAuthUser(settings, input = {}) {
       generatedPassword: password,
       existing: Boolean(existing),
       message: existing
-        ? "Compte mobile existant lié à MailDesk et mot de passe régénéré."
-        : "Compte mobile créé avec un mot de passe généré.",
+        ? "Compte mobile existant lié à MailDesk et mot de passe régénéré. Déconnectez puis reconnectez le mobile pour rafraîchir ses droits."
+        : "Compte mobile créé avec un mot de passe généré. Connectez-vous ensuite dans le mobile avec ce compte.",
     };
   }
 
@@ -178,7 +178,7 @@ async function createMobileAuthUser(settings, input = {}) {
       userId: String(existing.id),
       generatedPassword: "",
       existing: true,
-      message: "Compte mobile existant lié à MailDesk. Un e-mail de définition du mot de passe a été envoyé.",
+      message: "Compte mobile existant lié à MailDesk. Un e-mail de définition du mot de passe a été envoyé. Déconnectez puis reconnectez le mobile pour rafraîchir ses droits.",
     };
   }
 

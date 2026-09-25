@@ -1117,6 +1117,49 @@ function unblockSender(email) {
   return true;
 }
 
+
+function exportBlockedSenders() {
+  return getDb().prepare("SELECT email, created_at FROM blocked_senders ORDER BY datetime(created_at) DESC").all()
+    .map((row) => ({
+      email: row.email,
+      is_deleted: false,
+      created_at: row.created_at,
+      updated_at: row.created_at,
+    }));
+}
+
+function mergeRemoteBlockedSenders(rows) {
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.exec("BEGIN");
+  try {
+    for (const row of rows || []) {
+      const email = String(row?.email || "").trim().toLowerCase();
+      if (!email) continue;
+      if (row?.is_deleted) {
+        db.prepare("DELETE FROM blocked_senders WHERE email = ?").run(email);
+        continue;
+      }
+      const createdAt = row.created_at || row.updated_at || now;
+      db.prepare("INSERT INTO blocked_senders (email, created_at) VALUES (?, ?) ON CONFLICT(email) DO NOTHING")
+        .run(email, createdAt);
+      db.prepare(`
+        UPDATE messages
+        SET folder = 'junk', snoozed_until = NULL, updated_at = ?, synced_at = NULL
+        WHERE direction = 'inbound'
+          AND lower(from_addr) LIKE ?
+          AND folder <> 'trash'
+          AND is_deleted = 0
+      `).run(now, `%${email}%`);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return listBlockedSenders();
+}
+
 function rowToMail(row) {
   if (!row) return null;
   return {
@@ -2318,6 +2361,7 @@ module.exports = {
   deleteOutbox,
   deleteRule,
   enqueueOutbox,
+  exportBlockedSenders,
   exportCalendarEvents,
   exportContacts,
   exportCustomFolders,
@@ -2346,6 +2390,7 @@ module.exports = {
   markRuleWebhookDelivered,
   markRuleWebhookFailed,
   markSynced,
+  mergeRemoteBlockedSenders,
   mergeRemoteCalendarEvents,
   mergeRemoteContacts,
   mergeRemoteCustomFolders,

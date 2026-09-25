@@ -1,4 +1,5 @@
 const {
+  exportBlockedSenders,
   exportCalendarEvents,
   exportContacts,
   exportCustomFolders,
@@ -7,6 +8,7 @@ const {
   exportTemplates,
   getSyncState,
   markSynced,
+  mergeRemoteBlockedSenders,
   mergeRemoteCalendarEvents,
   mergeRemoteContacts,
   mergeRemoteCustomFolders,
@@ -23,6 +25,8 @@ const TABLES = {
   rules: "maildesk_rules",
   templates: "maildesk_templates",
   calendar: "maildesk_calendar_events",
+  blocked: "maildesk_blocked_senders",
+  profile: "maildesk_profile",
 };
 
 function headers(key, extra = {}) {
@@ -153,12 +157,22 @@ async function performSyncWithSupabase(settings) {
   });
   mergeRemoteRows(remoteMessages.rows);
 
-  const [remoteContacts, remoteFolders, remoteRules, remoteTemplates, remoteCalendar] = await Promise.all([
+  const [
+    remoteContacts,
+    remoteFolders,
+    remoteRules,
+    remoteTemplates,
+    remoteCalendar,
+    remoteBlocked,
+    remoteProfile,
+  ] = await Promise.all([
     pullTable(url, key, TABLES.contacts, true),
     pullTable(url, key, TABLES.folders, true),
     pullTable(url, key, TABLES.rules, true),
     pullTable(url, key, TABLES.templates, true),
     pullTable(url, key, TABLES.calendar, true),
+    pullTable(url, key, TABLES.blocked, true),
+    pullTable(url, key, TABLES.profile, true),
   ]);
 
   if (remoteContacts.available) mergeRemoteContacts(remoteContacts.rows);
@@ -166,6 +180,7 @@ async function performSyncWithSupabase(settings) {
   if (remoteRules.available) mergeRemoteRules(remoteRules.rows);
   if (remoteTemplates.available) mergeRemoteTemplates(remoteTemplates.rows);
   if (remoteCalendar.available) mergeRemoteCalendarEvents(remoteCalendar.rows);
+  if (remoteBlocked.available) mergeRemoteBlockedSenders(remoteBlocked.rows);
 
   // Messages: only local rows changed since their last successful push.
   const dirtyMessages = exportRows({ dirtyOnly: true });
@@ -179,16 +194,37 @@ async function performSyncWithSupabase(settings) {
   const localFolders = exportCustomFolders();
   const localTemplates = exportTemplates();
   const localCalendar = exportCalendarEvents();
+  const localBlocked = exportBlockedSenders();
 
   const contactsToPush = remoteContacts.available ? changedRows(localContacts, remoteContacts.rows, "email") : [];
   const foldersToPush = remoteFolders.available ? changedRows(localFolders, remoteFolders.rows) : [];
   const templatesToPush = remoteTemplates.available ? changedRows(localTemplates, remoteTemplates.rows) : [];
   const calendarToPush = remoteCalendar.available ? changedRows(localCalendar, remoteCalendar.rows) : [];
+  const blockedToPush = remoteBlocked.available ? changedRows(localBlocked, remoteBlocked.rows, "email") : [];
 
   if (remoteContacts.available) await pushTable(url, key, TABLES.contacts, contactsToPush);
   if (remoteFolders.available) await pushTable(url, key, TABLES.folders, foldersToPush);
   if (remoteTemplates.available) await pushTable(url, key, TABLES.templates, templatesToPush);
   if (remoteCalendar.available) await pushTable(url, key, TABLES.calendar, calendarToPush);
+  if (remoteBlocked.available) await pushTable(url, key, TABLES.blocked, blockedToPush);
+
+  let profilePushed = 0;
+  if (remoteProfile.available) {
+    const remoteDefault = (remoteProfile.rows || []).find((row) => String(row?.id || "") === "default");
+    const nextDefaultFrom = String(settings?.from || "");
+    const nextSignature = String(settings?.signature || "");
+    if (!remoteDefault
+      || String(remoteDefault.default_from || "") !== nextDefaultFrom
+      || String(remoteDefault.signature_html || "") !== nextSignature) {
+      await pushTable(url, key, TABLES.profile, [{
+        id: "default",
+        default_from: nextDefaultFrom,
+        signature_html: nextSignature,
+        updated_at: new Date().toISOString(),
+      }]);
+      profilePushed = 1;
+    }
+  }
 
   let ruleSchemaV2 = false;
   let localRules = [];
@@ -207,7 +243,7 @@ async function performSyncWithSupabase(settings) {
   }
 
   const extrasReady = remoteContacts.available && remoteFolders.available && remoteRules.available
-    && remoteTemplates.available && remoteCalendar.available;
+    && remoteTemplates.available && remoteCalendar.available && remoteBlocked.available && remoteProfile.available;
   const message = !extrasReady
     ? "Mails synchronisés en mode différentiel. Utilisez « Créer / réparer les tables » pour activer la synchro complète."
     : remoteRules.available && !ruleSchemaV2
@@ -225,6 +261,8 @@ async function performSyncWithSupabase(settings) {
     rules: rulesToPush.length,
     templates: templatesToPush.length,
     calendarEvents: calendarToPush.length,
+    blockedSenders: blockedToPush.length,
+    profile: profilePushed,
     message,
   };
 }

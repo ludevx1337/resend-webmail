@@ -2054,7 +2054,11 @@ export default function Home() {
       return;
     }
     if (payload.action === "inbox-updated" && window.maildesk) {
-      const snapshot = await window.maildesk.getLocalSnapshot();
+      const [snapshot, syncedFolders, syncedContacts] = await Promise.all([
+        window.maildesk.getLocalSnapshot(),
+        window.maildesk.listCustomFolders(),
+        window.maildesk.listContacts(500),
+      ]);
       setInbox(snapshot.messages.filter((mail) => mail.direction !== "outbound") as MailItem[]);
       setSent(snapshot.messages.filter((mail) => mail.direction === "outbound") as MailItem[]);
       setReadIds(snapshot.readIds);
@@ -2066,6 +2070,8 @@ export default function Home() {
       setJunkIds(snapshot.junkIds ?? []);
       setSnoozedIds(snapshot.snoozedIds ?? []);
       setDeletedIds(snapshot.deletedIds);
+      setCustomFolders(syncedFolders as CustomFolderEntry[]);
+      setContacts(syncedContacts as ContactEntry[]);
       void cacheMissingBodies(snapshot.missingBodyIds);
       return;
     }
@@ -5272,15 +5278,19 @@ export default function Home() {
                         </div>
                         <div className="edge-wiki-step">
                           <span className="edge-wiki-index">3</span>
-                          <div><strong>Secrets Edge requis</strong><p>À renseigner dans Supabase → Edge Functions → Secrets. Le compte créé depuis MailDesk reçoit automatiquement l’accès mobile via son metadata Auth.</p><div className="edge-secret-list"><code>RESEND_API_KEY</code><code>RESEND_FROM</code><code className="optional">MAILDESK_MOBILE_ALLOWED_EMAILS (optionnel)</code><code className="optional">MAILDESK_MOBILE_ALLOWED_USER_IDS (optionnel)</code><code className="optional">MAILDESK_MOBILE_SIGNATURE_HTML (optionnel)</code></div></div>
+                          <div><strong>Secrets Edge requis</strong><p>À renseigner dans Supabase → Edge Functions → Secrets. Le compte créé depuis MailDesk reçoit automatiquement l’accès mobile via son metadata Auth.</p><div className="edge-secret-list"><code>RESEND_API_KEY</code><code>RESEND_FROM</code><code>RESEND_WEBHOOK_SECRET</code><code className="optional">MAILDESK_MOBILE_ALLOWED_EMAILS (optionnel)</code><code className="optional">MAILDESK_MOBILE_ALLOWED_USER_IDS (optionnel)</code><code className="optional">MAILDESK_MOBILE_SIGNATURE_HTML (fallback)</code></div></div>
                         </div>
                         <div className="edge-wiki-step">
                           <span className="edge-wiki-index">4</span>
-                          <div><strong>Permissions du token Management API</strong><p>Dans le token scoped : <strong>Database → READ-WRITE</strong>, <strong>API Keys → READ</strong> et <strong>Edge Functions → READ-WRITE</strong>. MailDesk n’a pas besoin de révéler les clés secrètes du projet.</p></div>
+                          <div><strong>Webhook Resend + notifications</strong><p>Dans Resend → Webhooks, ajoutez l’événement <code>email.received</code> vers l’URL ci-dessous, puis copiez le secret <code>whsec_…</code> dans <code>RESEND_WEBHOOK_SECRET</code>. L’Edge Function enregistre le mail dans Supabase puis envoie les notifications Expo aux téléphones enregistrés.</p><code>{supabaseEdgeApiUrl ? `${supabaseEdgeApiUrl}/webhooks/resend` : "https://<project-ref>.supabase.co/functions/v1/maildesk-api/webhooks/resend"}</code></div>
                         </div>
                         <div className="edge-wiki-step">
                           <span className="edge-wiki-index">5</span>
-                          <div><strong>Provisionnement mobile</strong><p>Créez ou liez d’abord le compte Auth, ajoutez <code>maildesk://**</code> aux Redirect URLs, puis générez le QR. Le QR préremplit l’e-mail du compte mais ne contient jamais le mot de passe.</p></div>
+                          <div><strong>Permissions du token Management API</strong><p>Dans le token scoped : <strong>Database → READ-WRITE</strong>, <strong>API Keys → READ</strong> et <strong>Edge Functions → READ-WRITE</strong>. MailDesk n’a pas besoin de révéler les clés secrètes du projet.</p></div>
+                        </div>
+                        <div className="edge-wiki-step">
+                          <span className="edge-wiki-index">6</span>
+                          <div><strong>Provisionnement mobile</strong><p>Créez ou liez d’abord le compte Auth, ajoutez <code>maildesk://**</code> aux Redirect URLs, puis générez le QR. Le QR préremplit l’e-mail du compte mais ne contient jamais le mot de passe. Dossiers, contacts, états de mails et signature transitent ensuite par Supabase.</p></div>
                         </div>
                       </div>
                     </details>

@@ -170,14 +170,44 @@ create index if not exists maildesk_templates_name_idx
 create index if not exists maildesk_calendar_events_start_idx
   on public.maildesk_calendar_events (is_deleted, start_at);
 
--- MailDesk synchronizes through a server/secret project key stored with Windows safeStorage.
--- Public anonymous access stays closed even if the project's Data API exposes public.
+
+create table if not exists public.maildesk_profile (
+  id text primary key,
+  default_from text not null default '',
+  signature_html text not null default '',
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.maildesk_blocked_senders (
+  email text primary key,
+  is_deleted boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.maildesk_push_tokens (
+  token text primary key,
+  user_id uuid not null,
+  platform text not null default 'unknown',
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists maildesk_push_tokens_user_idx
+  on public.maildesk_push_tokens (user_id, active);
+
+-- Desktop keeps using the project secret key. Authenticated mobile users only gain
+-- access when MailDesk Desktop has marked their Supabase Auth app_metadata.maildesk_access=true.
 alter table public.maildesk_messages enable row level security;
 alter table public.maildesk_contacts enable row level security;
 alter table public.maildesk_folders enable row level security;
 alter table public.maildesk_rules enable row level security;
 alter table public.maildesk_templates enable row level security;
 alter table public.maildesk_calendar_events enable row level security;
+alter table public.maildesk_profile enable row level security;
+alter table public.maildesk_blocked_senders enable row level security;
+alter table public.maildesk_push_tokens enable row level security;
 
 revoke all on table public.maildesk_messages from anon, authenticated;
 revoke all on table public.maildesk_contacts from anon, authenticated;
@@ -185,6 +215,9 @@ revoke all on table public.maildesk_folders from anon, authenticated;
 revoke all on table public.maildesk_rules from anon, authenticated;
 revoke all on table public.maildesk_templates from anon, authenticated;
 revoke all on table public.maildesk_calendar_events from anon, authenticated;
+revoke all on table public.maildesk_profile from anon, authenticated;
+revoke all on table public.maildesk_blocked_senders from anon, authenticated;
+revoke all on table public.maildesk_push_tokens from anon, authenticated;
 
 grant select, insert, update, delete on table public.maildesk_messages to service_role;
 grant select, insert, update, delete on table public.maildesk_contacts to service_role;
@@ -192,3 +225,75 @@ grant select, insert, update, delete on table public.maildesk_folders to service
 grant select, insert, update, delete on table public.maildesk_rules to service_role;
 grant select, insert, update, delete on table public.maildesk_templates to service_role;
 grant select, insert, update, delete on table public.maildesk_calendar_events to service_role;
+grant select, insert, update, delete on table public.maildesk_profile to service_role;
+grant select, insert, update, delete on table public.maildesk_blocked_senders to service_role;
+grant select, insert, update, delete on table public.maildesk_push_tokens to service_role;
+
+grant select, insert, update on table public.maildesk_messages to authenticated;
+grant select on table public.maildesk_contacts to authenticated;
+grant select on table public.maildesk_folders to authenticated;
+grant select on table public.maildesk_profile to authenticated;
+grant select, insert, update on table public.maildesk_blocked_senders to authenticated;
+grant select, insert, update, delete on table public.maildesk_push_tokens to authenticated;
+
+
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'maildesk_messages') then
+      alter publication supabase_realtime add table public.maildesk_messages;
+    end if;
+    if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'maildesk_folders') then
+      alter publication supabase_realtime add table public.maildesk_folders;
+    end if;
+    if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'maildesk_contacts') then
+      alter publication supabase_realtime add table public.maildesk_contacts;
+    end if;
+    if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'maildesk_profile') then
+      alter publication supabase_realtime add table public.maildesk_profile;
+    end if;
+    if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'maildesk_blocked_senders') then
+      alter publication supabase_realtime add table public.maildesk_blocked_senders;
+    end if;
+  end if;
+end
+$$;
+
+drop policy if exists maildesk_mobile_messages on public.maildesk_messages;
+create policy maildesk_mobile_messages on public.maildesk_messages
+  for all to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true')
+  with check (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+
+drop policy if exists maildesk_mobile_contacts on public.maildesk_contacts;
+create policy maildesk_mobile_contacts on public.maildesk_contacts
+  for select to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+
+drop policy if exists maildesk_mobile_folders on public.maildesk_folders;
+create policy maildesk_mobile_folders on public.maildesk_folders
+  for select to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+
+drop policy if exists maildesk_mobile_profile on public.maildesk_profile;
+create policy maildesk_mobile_profile on public.maildesk_profile
+  for select to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+
+drop policy if exists maildesk_mobile_blocked_senders on public.maildesk_blocked_senders;
+create policy maildesk_mobile_blocked_senders on public.maildesk_blocked_senders
+  for all to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true')
+  with check (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+
+drop policy if exists maildesk_mobile_push_tokens on public.maildesk_push_tokens;
+create policy maildesk_mobile_push_tokens on public.maildesk_push_tokens
+  for all to authenticated
+  using (
+    coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true'
+    and user_id = auth.uid()
+  )
+  with check (
+    coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true'
+    and user_id = auth.uid()
+  );
