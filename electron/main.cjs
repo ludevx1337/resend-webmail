@@ -64,9 +64,10 @@ const {
   upsertMail,
   upsertMany,
 } = require("./db.cjs");
-const { syncWithSupabase } = require("./sync.cjs");
+const { restoreFromSupabase, syncWithSupabase } = require("./sync.cjs");
 const { deployMobileEdgeFunction, getMobileProvisioning, getMobileProvisioningStatus, initializeSupabase } = require("./supabase-provision.cjs");
 const { createMobileAuthUser } = require("./supabase-auth.cjs");
+const { refreshSupabaseUserSession, signInSupabaseUser } = require("./supabase-session.cjs");
 const { checkForUpdate } = require("./updater.cjs");
 
 let mainWindow = null;
@@ -95,6 +96,37 @@ if (process.platform === "win32") {
   app.setAppUserModelId("com.devlow.maildesk");
 }
 app.setName("MailDesk");
+
+function persistSupabaseUserSession(session = {}) {
+  saveStoredSettings({
+    supabaseUrl: session.supabaseUrl,
+    supabasePublishableKey: session.supabasePublishableKey,
+    supabaseProjectRef: session.supabaseProjectRef,
+    supabaseAuthEmail: session.supabaseAuthEmail,
+    supabaseAuthAccessToken: session.supabaseAuthAccessToken,
+    supabaseAuthRefreshToken: session.supabaseAuthRefreshToken,
+    supabaseAuthExpiresAt: session.supabaseAuthExpiresAt,
+    supabaseAuthUserId: session.supabaseAuthUserId,
+  }, { allowIncomplete: true });
+  applyStoredSettings();
+  return effectiveSettings();
+}
+
+async function settingsWithFreshSupabaseSession(settings = effectiveSettings()) {
+  if (!settings?.supabaseAuthRefreshToken || !(settings?.supabasePublishableKey || settings?.supabaseKey)) {
+    return settings;
+  }
+  const next = await refreshSupabaseUserSession(settings);
+  if (next.refreshed) {
+    return persistSupabaseUserSession(next);
+  }
+  return next;
+}
+
+async function syncCurrentSupabase(settings = effectiveSettings()) {
+  return syncWithSupabase(await settingsWithFreshSupabaseSession(settings));
+}
+
 
 function parseMailtoUrl(value) {
   const raw = String(value || "").trim();
@@ -320,7 +352,7 @@ async function pollInboxInBackground() {
 
     if (newMessages.length === 0) {
       try {
-        const sync = await syncWithSupabase(effectiveSettings());
+        const sync = await syncCurrentSupabase();
         if (sync?.configured) {
           sendMainAction("inbox-updated", { count: 0, source: "supabase" });
         }
@@ -358,7 +390,7 @@ async function pollInboxInBackground() {
         count: newMessages.length,
       });
       try {
-        await syncWithSupabase(effectiveSettings());
+        await syncCurrentSupabase();
       } catch (error) {
         console.warn("Background Supabase sync failed", error);
       }
@@ -845,10 +877,10 @@ function showFirstRunSetup() {
   return new Promise((resolve) => {
     setupResolver = resolve;
     setupWindow = new BrowserWindow({
-      width: 690,
-      height: 620,
-      minWidth: 600,
-      minHeight: 540,
+      width: 790,
+      height: 720,
+      minWidth: 640,
+      minHeight: 600,
       resizable: true,
       title: "Première configuration MailDesk",
       icon: path.join(app.getAppPath(), "public", "maildesk.ico"),
@@ -1044,6 +1076,64 @@ function createWindow(url) {
   });
 }
 
+ipcMain.handle("maildesk:setup-restore", async (_event, input) => {
+  try {
+    const session = await signInSupabaseUser(input || {});
+    const currentSettings = effectiveSettings();
+    if (
+      hasConfiguredAccount()
+      && currentSettings.supabaseUrl
+      && currentSettings.supabaseUrl.replace(/\/$/, "") !== session.supabaseUrl.replace(/\/$/, "")
+    ) {
+      throw new Error(
+        "Ce PC MailDesk est déjà lié à un autre projet Supabase. "
+        + "Pour éviter de mélanger deux espaces dans la même base locale, exportez d’abord une sauvegarde puis utilisez une nouvelle installation.",
+      );
+    }
+    const restoreSettings = {
+      ...currentSettings,
+      ...session,
+    };
+    const restored = await restoreFromSupabase(restoreSettings);
+    const profile = restored.profile || null;
+
+    saveStoredSettings({
+      supabaseUrl: session.supabaseUrl,
+      supabasePublishableKey: session.supabasePublishableKey,
+      supabaseProjectRef: session.supabaseProjectRef,
+      supabaseAuthEmail: session.supabaseAuthEmail,
+      supabaseAuthAccessToken: session.supabaseAuthAccessToken,
+      supabaseAuthRefreshToken: session.supabaseAuthRefreshToken,
+      supabaseAuthExpiresAt: session.supabaseAuthExpiresAt,
+      supabaseAuthUserId: session.supabaseAuthUserId,
+      ...(profile?.defaultFrom ? { from: profile.defaultFrom } : {}),
+      ...(profile ? { signature: profile.signatureHtml } : {}),
+    }, { allowIncomplete: true });
+    applyStoredSettings();
+
+    const current = effectiveSettings();
+    const response = {
+      ok: true,
+      email: session.supabaseAuthEmail,
+      from: current.from || profile?.defaultFrom || "",
+      needsResendApiKey: !current.apiKey,
+      restored,
+    };
+
+    if (hasConfiguredAccount()) {
+      if (setupResolver) {
+        const pending = setupResolver;
+        setupResolver = null;
+        pending(true);
+      }
+      setTimeout(() => setupWindow?.close(), 120);
+    }
+    return response;
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
 ipcMain.handle("maildesk:setup-save", (_event, input) => {
   try {
     saveStoredSettings(input);
@@ -1105,7 +1195,7 @@ ipcMain.handle("maildesk:save-settings", async (_event, input) => {
         }
         sync = initialized.sync;
       } else {
-        sync = await syncWithSupabase(saved);
+        sync = await syncCurrentSupabase(saved);
       }
     } catch (error) {
       sync = {
@@ -1223,7 +1313,7 @@ ipcMain.handle("maildesk:db-cache-detail", (_event, payload) => {
 ipcMain.handle("maildesk:db-update-state", (_event, payload) => updateState(payload?.id, payload?.patch));
 ipcMain.handle("maildesk:sync-now", async () => {
   try {
-    return await syncWithSupabase(effectiveSettings());
+    return await syncCurrentSupabase();
   } catch (error) {
     return { configured: true, ok: false, mode: "local-only", message: error instanceof Error ? error.message : String(error) };
   }
@@ -1284,6 +1374,15 @@ ipcMain.handle("maildesk:app-info", () => ({
   userDataPath: app.getPath("userData"),
   databasePath: databasePath(),
 }));
+ipcMain.handle("maildesk:workspace-setup-open", () => {
+  if (setupWindow && !setupWindow.isDestroyed()) {
+    setupWindow.show();
+    setupWindow.focus();
+    return true;
+  }
+  void showFirstRunSetup();
+  return true;
+});
 
 ipcMain.handle("maildesk:windows-integration-get", () => windowsIntegrationStatus());
 ipcMain.handle("maildesk:windows-startup-set", (_event, enabled) => setOpenAtLogin(enabled));

@@ -1,6 +1,6 @@
 {
   "name": "resend-webmail",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "MailDesk - client Windows Electron pour Resend",
   "author": "DevLow",
   "license": "GPL-3.0-only",

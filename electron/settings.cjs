@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { app, safeStorage } = require("electron");
 
-const SETTINGS_VERSION = 8;
+const SETTINGS_VERSION = 9;
 
 function normalizeIdentities(value, legacyFrom = "", legacySignature = "") {
   const input = Array.isArray(value) ? value : [];
@@ -55,9 +55,14 @@ function defaults() {
     themeColor: "#0f6cbd",
     supabaseUrl: "",
     supabaseKey: "",
+    supabasePublishableKey: "",
     supabaseProjectRef: "",
     supabaseManagementToken: "",
     supabaseAuthEmail: "",
+    supabaseAuthAccessToken: "",
+    supabaseAuthRefreshToken: "",
+    supabaseAuthExpiresAt: 0,
+    supabaseAuthUserId: "",
     mobileApiUrl: "",
     autoUpdateEnabled: false,
     updateManifestUrl: "",
@@ -118,10 +123,20 @@ function effectiveSettings() {
     from: defaultIdentity?.from || fallbackFrom,
     signature: defaultIdentity?.signature ?? stored.signature ?? "",
     supabaseUrl: stored.supabaseUrl || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "",
-    supabaseKey: stored.supabaseKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_ANON_KEY || "",
+    supabaseKey: stored.supabaseKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || "",
+    supabasePublishableKey: stored.supabasePublishableKey
+      || process.env.SUPABASE_PUBLISHABLE_KEY
+      || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+      || process.env.SUPABASE_ANON_KEY
+      || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      || "",
     supabaseProjectRef: stored.supabaseProjectRef || process.env.SUPABASE_PROJECT_REF || "",
     supabaseManagementToken: stored.supabaseManagementToken || process.env.SUPABASE_ACCESS_TOKEN || "",
     supabaseAuthEmail: stored.supabaseAuthEmail || "",
+    supabaseAuthAccessToken: stored.supabaseAuthAccessToken || "",
+    supabaseAuthRefreshToken: stored.supabaseAuthRefreshToken || "",
+    supabaseAuthExpiresAt: Number(stored.supabaseAuthExpiresAt || 0),
+    supabaseAuthUserId: stored.supabaseAuthUserId || "",
     mobileApiUrl: stored.mobileApiUrl || process.env.MAILDESK_PUBLIC_API_URL || "",
     autoUpdateEnabled: Boolean(stored.autoUpdateEnabled),
     updateManifestUrl: stored.updateManifestUrl || process.env.MAILDESK_UPDATE_MANIFEST_URL || "",
@@ -141,13 +156,14 @@ function applyStoredSettings() {
   if (stored.from) process.env.RESEND_FROM = stored.from;
   if (stored.supabaseUrl) process.env.SUPABASE_URL = stored.supabaseUrl;
   if (stored.supabaseKey) process.env.SUPABASE_SERVICE_ROLE_KEY = stored.supabaseKey;
+  if (stored.supabasePublishableKey) process.env.SUPABASE_PUBLISHABLE_KEY = stored.supabasePublishableKey;
   if (stored.supabaseProjectRef) process.env.SUPABASE_PROJECT_REF = stored.supabaseProjectRef;
   if (stored.supabaseManagementToken) process.env.SUPABASE_ACCESS_TOKEN = stored.supabaseManagementToken;
   if (stored.mobileApiUrl) process.env.MAILDESK_PUBLIC_API_URL = stored.mobileApiUrl;
   return effectiveSettings();
 }
 
-function saveStoredSettings(input) {
+function saveStoredSettings(input, options = {}) {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error("Le chiffrement sécurisé Windows n'est pas disponible sur cette session.");
   }
@@ -176,6 +192,9 @@ function saveStoredSettings(input) {
       : normalizeThemeColor(current.themeColor),
     supabaseUrl: typeof input?.supabaseUrl === "string" ? input.supabaseUrl.trim().replace(/\/$/, "") : current.supabaseUrl,
     supabaseKey: typeof input?.supabaseKey === "string" && input.supabaseKey.trim() ? input.supabaseKey.trim() : current.supabaseKey,
+    supabasePublishableKey: typeof input?.supabasePublishableKey === "string" && input.supabasePublishableKey.trim()
+      ? input.supabasePublishableKey.trim()
+      : current.supabasePublishableKey,
     supabaseProjectRef: typeof input?.supabaseProjectRef === "string" ? input.supabaseProjectRef.trim() : current.supabaseProjectRef,
     supabaseManagementToken: typeof input?.supabaseManagementToken === "string" && input.supabaseManagementToken.trim()
       ? input.supabaseManagementToken.trim()
@@ -183,6 +202,18 @@ function saveStoredSettings(input) {
     supabaseAuthEmail: typeof input?.supabaseAuthEmail === "string"
       ? input.supabaseAuthEmail.trim().toLowerCase()
       : current.supabaseAuthEmail,
+    supabaseAuthAccessToken: typeof input?.supabaseAuthAccessToken === "string"
+      ? input.supabaseAuthAccessToken.trim()
+      : current.supabaseAuthAccessToken,
+    supabaseAuthRefreshToken: typeof input?.supabaseAuthRefreshToken === "string"
+      ? input.supabaseAuthRefreshToken.trim()
+      : current.supabaseAuthRefreshToken,
+    supabaseAuthExpiresAt: Number.isFinite(Number(input?.supabaseAuthExpiresAt))
+      ? Number(input.supabaseAuthExpiresAt)
+      : Number(current.supabaseAuthExpiresAt || 0),
+    supabaseAuthUserId: typeof input?.supabaseAuthUserId === "string"
+      ? input.supabaseAuthUserId.trim()
+      : current.supabaseAuthUserId,
     mobileApiUrl: typeof input?.mobileApiUrl === "string"
       ? input.mobileApiUrl.trim().replace(/\/$/, "")
       : current.mobileApiUrl,
@@ -194,8 +225,10 @@ function saveStoredSettings(input) {
       : current.updateManifestUrl,
   };
 
-  if (!next.from || !next.identities.length) throw new Error("Au moins une identité d'envoi est obligatoire.");
-  if (!next.apiKey) throw new Error("La clé API Resend est obligatoire.");
+  if (!options.allowIncomplete) {
+    if (!next.from || !next.identities.length) throw new Error("Au moins une identité d'envoi est obligatoire.");
+    if (!next.apiKey) throw new Error("La clé API Resend est obligatoire.");
+  }
 
   const accountEncrypted = safeStorage.encryptString(JSON.stringify(next)).toString("base64");
   fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
@@ -213,6 +246,9 @@ function saveStoredSettings(input) {
 
   if (next.supabaseKey) process.env.SUPABASE_SERVICE_ROLE_KEY = next.supabaseKey;
   else delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (next.supabasePublishableKey) process.env.SUPABASE_PUBLISHABLE_KEY = next.supabasePublishableKey;
+  else delete process.env.SUPABASE_PUBLISHABLE_KEY;
 
   if (next.supabaseProjectRef) process.env.SUPABASE_PROJECT_REF = next.supabaseProjectRef;
   else delete process.env.SUPABASE_PROJECT_REF;
@@ -239,6 +275,8 @@ function publicSettings() {
     supabaseProjectRef: current.supabaseProjectRef,
     hasApiKey: Boolean(current.apiKey),
     hasSupabaseKey: Boolean(current.supabaseKey),
+    hasSupabasePublishableKey: Boolean(current.supabasePublishableKey),
+    hasSupabaseAuthSession: Boolean(current.supabaseAuthRefreshToken && current.supabaseAuthUserId),
     hasSupabaseManagementToken: Boolean(current.supabaseManagementToken),
     supabaseAuthEmail: current.supabaseAuthEmail || "",
     mobileApiUrl: current.mobileApiUrl || "",

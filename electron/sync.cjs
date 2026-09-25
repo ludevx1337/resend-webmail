@@ -29,13 +29,60 @@ const TABLES = {
   profile: "maildesk_profile",
 };
 
-function headers(key, extra = {}) {
-  const authHeaders = { apikey: key };
-  if (!String(key).startsWith("sb_")) {
-    authHeaders.Authorization = `Bearer ${key}`;
+function jwtRole(value) {
+  const token = String(value || "").trim();
+  const parts = token.split(".");
+  if (parts.length !== 3) return "";
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return String(payload?.role || "");
+  } catch {
+    return "";
   }
+}
+
+function isSecretKey(value) {
+  const key = String(value || "").trim();
+  return key.startsWith("sb_secret_") || jwtRole(key) === "service_role";
+}
+
+function resolveSyncCredentials(settings = {}) {
+  const secretKey = String(settings.supabaseKey || "").trim();
+  if (isSecretKey(secretKey)) {
+    return {
+      apikey: secretKey,
+      bearer: secretKey.startsWith("sb_secret_") ? "" : secretKey,
+      mode: "service",
+    };
+  }
+
+  const publishableKey = String(settings.supabasePublishableKey || secretKey || "").trim();
+  const accessToken = String(settings.supabaseAuthAccessToken || "").trim();
+  if (publishableKey && accessToken) {
+    return { apikey: publishableKey, bearer: accessToken, mode: "user" };
+  }
+
+  if (secretKey) {
+    return {
+      apikey: secretKey,
+      bearer: String(secretKey).startsWith("sb_") ? "" : secretKey,
+      mode: "legacy",
+    };
+  }
+  if (publishableKey) return { apikey: publishableKey, bearer: "", mode: "public" };
+  return { apikey: "", bearer: "", mode: "none" };
+}
+
+function headers(credentials, extra = {}) {
+  const apikey = typeof credentials === "string"
+    ? credentials
+    : String(credentials?.apikey || "").trim();
+  const bearer = typeof credentials === "string"
+    ? (!String(credentials).startsWith("sb_") ? String(credentials) : "")
+    : String(credentials?.bearer || "").trim();
   return {
-    ...authHeaders,
+    ...(apikey ? { apikey } : {}),
+    ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     ...extra,
   };
 }
@@ -55,7 +102,7 @@ async function failure(response, table) {
     return new Error(`La table Supabase '${table}' est introuvable. Utilisez « Créer / réparer les tables » dans Paramètres > Supabase.`);
   }
   if (response.status === 401 || response.status === 403) {
-    return new Error("La clé de synchronisation Supabase n'a pas les droits requis. Utilisez une clé service_role / secret de projet.");
+    return new Error("Accès Supabase refusé. Reconnectez l’espace MailDesk ou vérifiez les droits RLS du compte.");
   }
   return new Error(`Synchronisation Supabase impossible (${response.status})${detail ? ` : ${detail}` : ""}`);
 }
@@ -90,12 +137,120 @@ async function pullTable(url, key, table, optional = false, options = {}) {
     headers: headers(key, { Accept: "application/json" }),
   });
 
-  if (response.status === 404 && optional) {
-    return { available: false, rows: [] };
+  if (optional && [401, 403, 404].includes(response.status)) {
+    return {
+      available: false,
+      rows: [],
+      reason: response.status === 404 ? "missing" : "permission",
+    };
   }
   if (!response.ok) throw await failure(response, table);
   const rows = await response.json();
   return { available: true, rows: Array.isArray(rows) ? rows : [] };
+}
+
+async function pullAllTable(url, key, table, optional = false) {
+  const pageSize = 1000;
+  const rows = [];
+  for (let offset = 0; offset < 100000; offset += pageSize) {
+    const query = new URLSearchParams({
+      select: "*",
+      limit: String(pageSize),
+      offset: String(offset),
+    });
+    const response = await fetch(`${url}/rest/v1/${table}?${query.toString()}`, {
+      headers: headers(key, { Accept: "application/json" }),
+    });
+    if (optional && [401, 403, 404].includes(response.status)) {
+      return {
+        available: false,
+        rows: [],
+        reason: response.status === 404 ? "missing" : "permission",
+      };
+    }
+    if (!response.ok) throw await failure(response, table);
+    const page = await response.json();
+    const batch = Array.isArray(page) ? page : [];
+    rows.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+  return { available: true, rows };
+}
+
+async function restoreFromSupabase(settings) {
+  const url = String(settings?.supabaseUrl || "").replace(/\/$/, "");
+  const credentials = resolveSyncCredentials(settings);
+  if (!url || !credentials.apikey || !credentials.bearer) {
+    throw new Error("Une session utilisateur Supabase valide est nécessaire pour restaurer cet espace MailDesk.");
+  }
+
+  const remoteMessages = await pullAllTable(url, credentials, TABLES.messages, false);
+  const [
+    remoteContacts,
+    remoteFolders,
+    remoteRules,
+    remoteTemplates,
+    remoteCalendar,
+    remoteBlocked,
+    remoteProfile,
+  ] = await Promise.all([
+    pullAllTable(url, credentials, TABLES.contacts, true),
+    pullAllTable(url, credentials, TABLES.folders, true),
+    pullAllTable(url, credentials, TABLES.rules, true),
+    pullAllTable(url, credentials, TABLES.templates, true),
+    pullAllTable(url, credentials, TABLES.calendar, true),
+    pullAllTable(url, credentials, TABLES.blocked, true),
+    pullAllTable(url, credentials, TABLES.profile, true),
+  ]);
+
+  mergeRemoteRows(remoteMessages.rows);
+  if (remoteContacts.available) mergeRemoteContacts(remoteContacts.rows);
+  if (remoteFolders.available) mergeRemoteCustomFolders(remoteFolders.rows);
+  if (remoteRules.available) mergeRemoteRules(remoteRules.rows);
+  if (remoteTemplates.available) mergeRemoteTemplates(remoteTemplates.rows);
+  if (remoteCalendar.available) mergeRemoteCalendarEvents(remoteCalendar.rows);
+  if (remoteBlocked.available) mergeRemoteBlockedSenders(remoteBlocked.rows);
+
+  const cursor = latestTimestamp(remoteMessages.rows);
+  if (cursor) setSyncState(`supabase:${TABLES.messages}:updated_at`, cursor);
+
+  const profile = (remoteProfile.rows || []).find((row) => String(row?.id || "") === "default") || null;
+  const optionalTables = {
+    contacts: remoteContacts,
+    folders: remoteFolders,
+    rules: remoteRules,
+    templates: remoteTemplates,
+    calendar: remoteCalendar,
+    blocked: remoteBlocked,
+    profile: remoteProfile,
+  };
+  const missingTables = Object.entries(optionalTables)
+    .filter(([, value]) => !value.available)
+    .map(([name]) => name);
+
+  return {
+    ok: true,
+    configured: true,
+    mode: "restore",
+    messages: remoteMessages.rows.length,
+    contacts: remoteContacts.rows.length,
+    folders: remoteFolders.rows.length,
+    rules: remoteRules.rows.length,
+    templates: remoteTemplates.rows.length,
+    calendarEvents: remoteCalendar.rows.length,
+    blockedSenders: remoteBlocked.rows.length,
+    profile: profile
+      ? {
+          defaultFrom: String(profile.default_from || ""),
+          signatureHtml: String(profile.signature_html || ""),
+          updatedAt: String(profile.updated_at || ""),
+        }
+      : null,
+    missingTables,
+    message: missingTables.length
+      ? `Restauration terminée. Tables optionnelles absentes : ${missingTables.join(", ")}.`
+      : "Espace MailDesk restauré depuis Supabase.",
+  };
 }
 
 async function supportsColumns(url, key, table, columns) {
@@ -144,11 +299,12 @@ function changedRows(localRows, remoteRows, keyField = "id") {
 
 async function performSyncWithSupabase(settings) {
   const url = String(settings?.supabaseUrl || "").replace(/\/$/, "");
-  const key = String(settings?.supabaseKey || "").trim();
-  if (!url || !key) {
+  const credentials = resolveSyncCredentials(settings);
+  if (!url || !credentials.apikey) {
     return { configured: false, ok: true, mode: "local-only", message: "Base locale active" };
   }
 
+  const key = credentials;
   const messageCursorKey = `supabase:${TABLES.messages}:updated_at`;
   const previousMessageCursor = getSyncState(messageCursorKey);
   const remoteMessages = await pullTable(url, key, TABLES.messages, false, {
@@ -279,4 +435,4 @@ async function syncWithSupabase(settings) {
   }
 }
 
-module.exports = { syncWithSupabase };
+module.exports = { restoreFromSupabase, syncWithSupabase };

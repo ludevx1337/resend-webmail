@@ -197,8 +197,8 @@ create table if not exists public.maildesk_push_tokens (
 create index if not exists maildesk_push_tokens_user_idx
   on public.maildesk_push_tokens (user_id, active);
 
--- Desktop keeps using the project secret key. Authenticated mobile users only gain
--- access when MailDesk Desktop has marked their Supabase Auth app_metadata.maildesk_access=true.
+-- MailDesk Desktop and Mobile can synchronize with a normal authenticated user.
+-- Access requires Supabase Auth app_metadata.maildesk_access=true.
 alter table public.maildesk_messages enable row level security;
 alter table public.maildesk_contacts enable row level security;
 alter table public.maildesk_folders enable row level security;
@@ -229,11 +229,14 @@ grant select, insert, update, delete on table public.maildesk_profile to service
 grant select, insert, update, delete on table public.maildesk_blocked_senders to service_role;
 grant select, insert, update, delete on table public.maildesk_push_tokens to service_role;
 
-grant select, insert, update on table public.maildesk_messages to authenticated;
-grant select on table public.maildesk_contacts to authenticated;
-grant select on table public.maildesk_folders to authenticated;
-grant select on table public.maildesk_profile to authenticated;
-grant select, insert, update on table public.maildesk_blocked_senders to authenticated;
+grant select, insert, update, delete on table public.maildesk_messages to authenticated;
+grant select, insert, update, delete on table public.maildesk_contacts to authenticated;
+grant select, insert, update, delete on table public.maildesk_folders to authenticated;
+grant select, insert, update, delete on table public.maildesk_rules to authenticated;
+grant select, insert, update, delete on table public.maildesk_templates to authenticated;
+grant select, insert, update, delete on table public.maildesk_calendar_events to authenticated;
+grant select, insert, update, delete on table public.maildesk_profile to authenticated;
+grant select, insert, update, delete on table public.maildesk_blocked_senders to authenticated;
 grant select, insert, update, delete on table public.maildesk_push_tokens to authenticated;
 
 
@@ -267,18 +270,39 @@ create policy maildesk_mobile_messages on public.maildesk_messages
 
 drop policy if exists maildesk_mobile_contacts on public.maildesk_contacts;
 create policy maildesk_mobile_contacts on public.maildesk_contacts
-  for select to authenticated
-  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+  for all to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true')
+  with check (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
 
 drop policy if exists maildesk_mobile_folders on public.maildesk_folders;
 create policy maildesk_mobile_folders on public.maildesk_folders
-  for select to authenticated
-  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+  for all to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true')
+  with check (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+
+drop policy if exists maildesk_mobile_rules on public.maildesk_rules;
+create policy maildesk_mobile_rules on public.maildesk_rules
+  for all to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true')
+  with check (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+
+drop policy if exists maildesk_mobile_templates on public.maildesk_templates;
+create policy maildesk_mobile_templates on public.maildesk_templates
+  for all to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true')
+  with check (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+
+drop policy if exists maildesk_mobile_calendar on public.maildesk_calendar_events;
+create policy maildesk_mobile_calendar on public.maildesk_calendar_events
+  for all to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true')
+  with check (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
 
 drop policy if exists maildesk_mobile_profile on public.maildesk_profile;
 create policy maildesk_mobile_profile on public.maildesk_profile
-  for select to authenticated
-  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
+  for all to authenticated
+  using (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true')
+  with check (coalesce(auth.jwt() -> 'app_metadata' ->> 'maildesk_access', 'false') = 'true');
 
 drop policy if exists maildesk_mobile_blocked_senders on public.maildesk_blocked_senders;
 create policy maildesk_mobile_blocked_senders on public.maildesk_blocked_senders

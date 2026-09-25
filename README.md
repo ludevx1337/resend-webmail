@@ -60,14 +60,30 @@ MailDesk est un client e-mail Windows construit avec **Electron + Next.js + Type
 
 ## Première ouverture Windows
 
-Si aucun compte n'a encore été configuré, Electron affiche une fenêtre dédiée avant MailDesk. Elle demande :
+Si aucun compte n'a encore été configuré, Electron affiche un assistant avant MailDesk avec deux chemins.
 
-- l'adresse d'envoi, par exemple `MailDesk <mail@domaine.fr>` ;
-- la clé API Resend `re_...`.
+### Restaurer un espace existant
 
-Ces valeurs sont enregistrées dans le profil Windows de MailDesk sous forme d'un blob chiffré avec `safeStorage`. Le fichier de configuration ne contient donc pas la clé API en clair. Une fois la configuration enregistrée, les prochains lancements ouvrent directement la boîte mail.
+Renseigner :
 
-La configuration peut ensuite être modifiée depuis l'icône **engrenage**. Les paramètres utilisent une navigation latérale par onglets ; chaque onglet affiche une disquette qui devient bleue uniquement lorsqu'il contient des modifications non enregistrées.
+- l'URL Supabase ou simplement le **Project Ref** ;
+- la clé **publishable / anon** du projet ;
+- l'e-mail du compte Supabase Auth ;
+- son mot de passe.
+
+MailDesk appelle Supabase Auth avec `signInWithPassword`, vérifie que le compte possède `app_metadata.maildesk_access=true`, puis reconstruit la base SQLite locale depuis Supabase. La restauration récupère les messages avec pagination, ainsi que dossiers, contacts, règles, modèles, calendrier, expéditeurs bloqués et profil/signature lorsqu'ils sont disponibles.
+
+Le mot de passe n'est **jamais enregistré**. Seuls les access/refresh tokens Supabase sont conservés dans le blob `safeStorage`, avec rotation automatique du refresh token. La clé Resend reste volontairement locale : après la restauration, l'assistant la demande si elle n'existe pas déjà sur le PC.
+
+Un ancien schéma Supabase peut restaurer le cœur MailDesk tout en signalant certaines tables optionnelles comme indisponibles. Dans ce cas, ouvrir ensuite **Paramètres > Supabase > Créer / réparer les tables**.
+
+### Nouvelle installation
+
+Le bouton **Configurer manuellement** conserve le parcours historique : adresse d'envoi puis clé API Resend `re_...`. Supabase pourra être connecté plus tard depuis les paramètres.
+
+Les secrets locaux sont enregistrés dans le profil Windows de MailDesk sous forme d'un blob chiffré avec `safeStorage`. Une fois la configuration terminée, les prochains lancements ouvrent directement la boîte mail.
+
+La configuration peut ensuite être modifiée depuis l'icône **engrenage**. **Paramètres > Supabase > Reconnecter / restaurer un espace** permet également de rouvrir l'assistant pour le projet déjà lié.
 
 ## Base locale SQLite
 
@@ -254,28 +270,22 @@ Depuis **Boîte d'envoi**, il est possible de rouvrir le message pour le modifie
 
 ## Synchronisation Supabase facultative
 
-Dans **Paramètres > Synchronisation Supabase**, MailDesk peut maintenant configurer automatiquement une instance Supabase existante.
+Dans **Paramètres > Synchronisation Supabase**, MailDesk peut configurer et synchroniser une instance Supabase existante selon deux niveaux d'accès.
 
-Renseigner :
+- **Synchronisation utilisateur** : clé publishable/anon + session Supabase Auth. C'est le mode utilisé par l'assistant de restauration et le mode recommandé au quotidien.
+- **Administration** : clé `sb_secret_...` / `service_role` et token Management API. Ces identifiants restent réservés à la création/réparation des tables, au provisioning mobile et au déploiement Edge.
 
-- **URL du projet** : `https://<project-ref>.supabase.co` ;
-- **Project Ref** : facultatif si l'URL standard permet de le détecter automatiquement ;
-- **clé de synchronisation** : de préférence une clé secrète moderne `sb_secret_...`, ou l'ancien `service_role` JWT ;
-- **token Supabase Management API** `sbp_...` avec `database_write`, `api_gateway_keys_read` et `edge_functions_write` si vous utilisez aussi le mobile via Edge.
-
-Le bouton **Créer / réparer les tables** envoie le schéma MailDesk à l'API de gestion Supabase, crée ou met à jour `public.maildesk_messages`, `public.maildesk_contacts`, `public.maildesk_folders` et `public.maildesk_rules`, vérifie ensuite la Data API et lance une première synchronisation. **Enregistrer** déclenche aussi automatiquement cette initialisation lorsque tous les identifiants nécessaires sont présents.
-
-Le schéma embarqué se trouve dans :
+Le bouton **Créer / réparer les tables** applique le schéma MailDesk complet : messages, contacts, dossiers, règles, modèles, calendrier, profil/signature, expéditeurs bloqués et push tokens. Le schéma embarqué se trouve dans :
 
 ```text
 supabase\maildesk_messages.sql
 ```
 
-Les quatre tables activent RLS et ne donnent aucun accès aux rôles publics `anon` / `authenticated`. La synchronisation administrative utilise donc la clé secrète configurée. Tous les secrets sont stockés dans le blob chiffré `safeStorage` du profil Windows et ne sont jamais exposés au renderer.
+Toutes les tables exposées utilisent RLS. Le rôle `anon` n'obtient aucun accès aux données MailDesk. Un utilisateur `authenticated` ne peut lire ou modifier l'espace que si son JWT contient `app_metadata.maildesk_access=true`. Les push tokens restent en plus limités à `user_id = auth.uid()`.
 
-La synchronisation V5 est **différentielle**. Pour les messages, MailDesk conserve un curseur `updated_at`, ne récupère que la fenêtre distante récente et n'envoie que les lignes SQLite réellement modifiées depuis leur dernière synchronisation (`synced_at`). Les contacts, dossiers, modèles, calendrier et règles ne sont poussés que lorsque leur `updated_at` local est plus récent que la version distante. Un verrou empêche deux synchronisations de s'exécuter simultanément. Sur une ancienne instance Supabase, les mails restent synchronisés et les règles simples gardent leur compatibilité ; **Créer / réparer les tables** ajoute les colonnes nécessaires aux règles V2 afin de synchroniser conditions multiples, actions multiples, priorité et arrêt de traitement. Les règles contenant un webhook restent locales. La base SQLite reste disponible en permanence comme cache hors ligne.
+La synchronisation reste **différentielle** après la restauration initiale : curseur `updated_at` pour les messages, envoi uniquement des lignes SQLite modifiées, comparaison `updated_at` pour contacts/dossiers/modèles/calendrier/règles, et verrou contre deux syncs simultanées. La première restauration utilise au contraire une lecture paginée complète pour ne pas être limitée aux 1000 premières lignes PostgREST.
 
-> Cette configuration avec clé secrète convient surtout à une installation privée sur un poste Windows de confiance. Pour distribuer MailDesk à plusieurs utilisateurs non fiables, utiliser plutôt Supabase Auth + RLS par utilisateur ou une API de synchronisation intermédiaire.
+Les anciens projets restent tolérés : si certaines tables optionnelles n'ont pas encore les grants/policies utilisateur, le cœur est restauré et l'assistant indique qu'une réparation de schéma est nécessaire. Les règles contenant un webhook restent locales. La base SQLite reste disponible en permanence comme cache hors ligne.
 
 ## Identités et signatures multiples
 

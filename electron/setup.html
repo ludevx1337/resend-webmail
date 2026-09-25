@@ -3,77 +3,405 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Configuration MailDesk</title>
+  <title>Bienvenue dans MailDesk</title>
   <style>
-    :root { color-scheme: light; font-family: "Segoe UI", Arial, sans-serif; color: #182230; background: #eef3f7; }
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
+      color: #1c2b39;
+      background: #eaf0f5;
+      --brand: #0f6cbd;
+      --brand-dark: #0a5799;
+      --brand-soft: #e9f4fc;
+      --line: #d6e0e8;
+      --muted: #687b8d;
+      --surface: #ffffff;
+    }
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(circle at top left, #dfeef9, #eef3f7 46%, #e9eef3); }
-    .card { width: min(620px, calc(100vw - 42px)); border: 1px solid #cad5df; border-radius: 14px; background: #fff; box-shadow: 0 24px 80px rgba(38, 55, 74, .18); overflow: hidden; }
-    header { display: flex; align-items: center; gap: 14px; padding: 22px 24px; border-bottom: 1px solid #e2e8ee; }
-    .mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 10px; background: #0f6cbd; color: white; font-size: 19px; font-weight: 800; }
-    h1 { margin: 0; font-size: 22px; }
-    header p { margin: 4px 0 0; color: #68778a; font-size: 13px; }
-    form { display: grid; gap: 16px; padding: 24px; }
-    label { display: grid; gap: 7px; }
-    label span { font-size: 12px; font-weight: 700; color: #42566c; }
-    input { width: 100%; height: 44px; padding: 0 12px; border: 1px solid #c8d4df; border-radius: 7px; outline: none; font: inherit; }
-    input:focus { border-color: #0f6cbd; box-shadow: 0 0 0 3px rgba(15,108,189,.12); }
-    .note { padding: 12px 13px; border-radius: 8px; background: #eef6fc; color: #3c5671; font-size: 12px; line-height: 1.45; }
-    .note strong { color: #0f5f9f; }
-    .error { min-height: 18px; color: #b42318; font-size: 12px; }
-    footer { display: flex; justify-content: flex-end; gap: 10px; padding-top: 2px; }
-    button { min-height: 40px; padding: 0 18px; border: 1px solid #cfd8e2; border-radius: 7px; background: #fff; cursor: pointer; font-weight: 700; }
-    button.primary { border-color: #0f6cbd; background: #0f6cbd; color: #fff; }
-    button:disabled { opacity: .6; cursor: wait; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(15,108,189,.16), transparent 34%),
+        radial-gradient(circle at 92% 92%, rgba(95,139,177,.13), transparent 30%),
+        linear-gradient(145deg, #edf3f7, #e7edf2);
+    }
+    button, input { font: inherit; }
+    .shell {
+      width: min(760px, calc(100vw - 32px));
+      border: 1px solid #cbd7e0;
+      border-radius: 20px;
+      background: rgba(255,255,255,.94);
+      box-shadow: 0 30px 90px rgba(31,53,72,.19), inset 0 1px 0 #fff;
+      overflow: hidden;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      padding: 22px 26px;
+      border-bottom: 1px solid #e2e9ef;
+      background: linear-gradient(180deg, #fff, #f8fafc);
+    }
+    .logo {
+      width: 48px; height: 48px; border-radius: 13px;
+      border: 1px solid #cbd9e4;
+      background: #f4f8fb;
+      box-shadow: 0 5px 13px rgba(31,70,102,.1);
+      object-fit: contain;
+    }
+    h1 { margin: 0; font-size: 22px; letter-spacing: -.3px; }
+    header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+    main { padding: 24px 26px 26px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .eyebrow {
+      color: var(--brand);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    h2 { margin: 0 0 7px; font-size: 19px; }
+    .lead { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+    .form-grid .wide { grid-column: 1 / -1; }
+    label { display: grid; gap: 6px; }
+    label span { color: #41576b; font-size: 11px; font-weight: 750; }
+    input {
+      width: 100%; height: 43px; padding: 0 12px;
+      border: 1px solid #c9d5df; border-radius: 8px;
+      color: #1b2b38; background: #fff; outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    input:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(15,108,189,.11);
+    }
+    .note, .success, .warning {
+      margin-top: 15px;
+      padding: 11px 13px;
+      border-radius: 9px;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .note { background: #eef6fc; color: #44627c; border: 1px solid #d7e9f6; }
+    .success { background: #edf8f2; color: #315d47; border: 1px solid #cfe8da; }
+    .warning { background: #fff8e8; color: #765a24; border: 1px solid #f2dfa8; }
+    .note strong, .success strong, .warning strong { display: block; margin-bottom: 2px; color: inherit; }
+    .error {
+      min-height: 18px; margin-top: 10px;
+      color: #b42318; font-size: 11px; line-height: 1.45;
+    }
+    .actions {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 10px; margin-top: 18px;
+    }
+    .actions-right { display: flex; gap: 9px; margin-left: auto; }
+    button {
+      min-height: 40px;
+      padding: 0 15px;
+      border: 1px solid #cbd6df;
+      border-radius: 8px;
+      background: linear-gradient(180deg, #fff, #f6f8fa);
+      color: #385066;
+      cursor: pointer;
+      font-weight: 750;
+      font-size: 11px;
+      box-shadow: 0 1px 1px rgba(25,45,62,.04);
+    }
+    button:hover:not(:disabled) { border-color: #aebfcd; background: #f8fafb; }
+    button.primary {
+      color: white;
+      border-color: var(--brand-dark);
+      background: linear-gradient(180deg, #1678ca, var(--brand));
+      box-shadow: 0 4px 10px rgba(15,108,189,.18);
+    }
+    button.link {
+      border-color: transparent;
+      background: transparent;
+      color: var(--brand);
+      box-shadow: none;
+      padding-inline: 6px;
+    }
+    button:disabled { opacity: .58; cursor: wait; }
+    .restore-summary {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+      margin: 15px 0 0;
+    }
+    .metric {
+      padding: 10px; border: 1px solid #dce5ec; border-radius: 9px;
+      background: #fafcfd;
+    }
+    .metric strong { display: block; font-size: 16px; color: #29465d; }
+    .metric span { display: block; margin-top: 2px; font-size: 9px; color: #788998; }
+    .divider {
+      height: 1px; margin: 19px 0; background: #e6ecf1;
+    }
+    .security-row {
+      display: flex; gap: 8px; align-items: flex-start;
+      margin-top: 14px; color: #718392; font-size: 10px; line-height: 1.45;
+    }
+    .shield {
+      flex: 0 0 auto;
+      width: 20px; height: 20px; display: grid; place-items: center;
+      border-radius: 6px; background: var(--brand-soft); color: var(--brand);
+      font-weight: 900; font-size: 10px;
+    }
+    @media (max-width: 650px) {
+      body { padding: 12px; }
+      .shell { width: 100%; }
+      main, header { padding-inline: 18px; }
+      .form-grid { grid-template-columns: 1fr; }
+      .form-grid .wide { grid-column: auto; }
+      .restore-summary { grid-template-columns: 1fr 1fr; }
+      .actions { align-items: stretch; flex-direction: column; }
+      .actions-right { width: 100%; margin: 0; }
+      .actions-right button { flex: 1; }
+    }
   </style>
 </head>
 <body>
-  <section class="card">
+  <section class="shell">
     <header>
-      <div class="mark">M</div>
+      <img class="logo" src="../public/logo_app_mail_resend_128.webp" alt="" />
       <div>
         <h1>Bienvenue dans MailDesk</h1>
-        <p>Configurez votre compte Resend une seule fois.</p>
+        <p>Retrouvez un espace existant ou configurez ce PC comme une nouvelle installation.</p>
       </div>
     </header>
-    <form id="setup-form">
-      <label>
-        <span>Adresse d'envoi</span>
-        <input id="from" autocomplete="email" placeholder="Votre nom <mail@votre-domaine.fr>" required />
-      </label>
-      <label>
-        <span>Clé API Resend</span>
-        <input id="apiKey" type="password" autocomplete="off" placeholder="re_..." required />
-      </label>
-      <div class="note">
-        <strong>Stockage sécurisé Windows.</strong><br />
-        La clé API et l'adresse du compte sont chiffrées avec Electron safeStorage, lié au système Windows. MailDesk stocke ensuite les messages dans une base SQLite locale pour conserver un accès hors ligne.
-      </div>
-      <div id="error" class="error"></div>
-      <footer>
-        <button id="save" class="primary" type="submit">Enregistrer et ouvrir MailDesk</button>
-      </footer>
-    </form>
+
+    <main>
+      <section id="restore-panel" class="panel active">
+        <div class="eyebrow">Espace existant</div>
+        <h2>Se connecter et restaurer MailDesk</h2>
+        <p class="lead">
+          Connectez-vous avec votre compte Supabase. MailDesk restaurera la base locale depuis votre espace synchronisé :
+          messages, dossiers, contacts, règles, modèles, calendrier, blocages et signature.
+        </p>
+
+        <form id="restore-form">
+          <div class="form-grid">
+            <label class="wide">
+              <span>URL du projet ou Project Ref Supabase</span>
+              <input id="supabaseUrl" autocomplete="url" placeholder="https://xxxx.supabase.co  ou  xxxx" required />
+            </label>
+            <label class="wide">
+              <span>Clé publishable / anon</span>
+              <input id="publishableKey" type="password" autocomplete="off" placeholder="sb_publishable_…" required />
+            </label>
+            <label>
+              <span>E-mail Supabase</span>
+              <input id="email" type="email" autocomplete="username" placeholder="vous@entreprise.fr" required />
+            </label>
+            <label>
+              <span>Mot de passe</span>
+              <input id="password" type="password" autocomplete="current-password" placeholder="Votre mot de passe" required />
+            </label>
+          </div>
+
+          <div class="note">
+            <strong>Connexion utilisateur sécurisée</strong>
+            Aucune clé <code>service_role</code> n’est nécessaire. Le mot de passe sert uniquement à ouvrir la session Supabase et n’est jamais enregistré par MailDesk.
+          </div>
+          <div id="restore-error" class="error"></div>
+
+          <div class="actions">
+            <button id="manual-choice" class="link" type="button">Configurer manuellement</button>
+            <div class="actions-right">
+              <button id="restore-submit" class="primary" type="submit">Connexion et synchronisation</button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section id="finalize-panel" class="panel">
+        <div class="eyebrow">Restauration terminée</div>
+        <h2>Finaliser ce PC</h2>
+        <p class="lead">
+          Vos données MailDesk sont revenues depuis Supabase. Les secrets restent volontairement locaux : renseignez la clé Resend de ce PC pour terminer.
+        </p>
+
+        <div id="restore-success" class="success"></div>
+        <div id="restore-warning" class="warning" hidden></div>
+        <div id="restore-summary" class="restore-summary"></div>
+
+        <div class="divider"></div>
+
+        <form id="finalize-form">
+          <div class="form-grid">
+            <label class="wide">
+              <span>Adresse d’envoi principale</span>
+              <input id="finalFrom" autocomplete="email" placeholder="Votre nom <mail@votre-domaine.fr>" required />
+            </label>
+            <label class="wide">
+              <span>Clé API Resend</span>
+              <input id="finalApiKey" type="password" autocomplete="off" placeholder="re_…" required />
+            </label>
+          </div>
+          <div class="security-row">
+            <div class="shield">✓</div>
+            <div>La clé Resend reste chiffrée localement avec Electron safeStorage. Elle n’est pas écrite dans les tables Supabase synchronisées.</div>
+          </div>
+          <div id="finalize-error" class="error"></div>
+          <div class="actions">
+            <button id="back-to-restore" class="link" type="button">Retour</button>
+            <div class="actions-right">
+              <button id="finalize-submit" class="primary" type="submit">Terminer et ouvrir MailDesk</button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section id="manual-panel" class="panel">
+        <div class="eyebrow">Nouvelle installation</div>
+        <h2>Configurer MailDesk manuellement</h2>
+        <p class="lead">
+          Utilisez ce mode si vous ne restaurez pas un espace existant. Vous pourrez connecter Supabase plus tard depuis les paramètres.
+        </p>
+
+        <form id="manual-form">
+          <div class="form-grid">
+            <label class="wide">
+              <span>Adresse d’envoi</span>
+              <input id="manualFrom" autocomplete="email" placeholder="Votre nom <mail@votre-domaine.fr>" required />
+            </label>
+            <label class="wide">
+              <span>Clé API Resend</span>
+              <input id="manualApiKey" type="password" autocomplete="off" placeholder="re_…" required />
+            </label>
+          </div>
+          <div class="note">
+            <strong>Configuration locale</strong>
+            Les secrets sont chiffrés avec Electron safeStorage. Vous pourrez ensuite activer la synchronisation Supabase depuis Paramètres → Supabase.
+          </div>
+          <div id="manual-error" class="error"></div>
+          <div class="actions">
+            <button id="back-to-login" class="link" type="button">Se connecter à un espace existant</button>
+            <div class="actions-right">
+              <button id="manual-submit" class="primary" type="submit">Enregistrer et ouvrir MailDesk</button>
+            </div>
+          </div>
+        </form>
+      </section>
+    </main>
   </section>
+
   <script>
-    const form = document.getElementById('setup-form');
-    const save = document.getElementById('save');
-    const error = document.getElementById('error');
-    form.addEventListener('submit', async (event) => {
+    const panels = {
+      restore: document.getElementById('restore-panel'),
+      finalize: document.getElementById('finalize-panel'),
+      manual: document.getElementById('manual-panel'),
+    };
+
+    function showPanel(name) {
+      Object.entries(panels).forEach(([key, panel]) => panel.classList.toggle('active', key === name));
+    }
+
+    function setBusy(button, busy, busyLabel, idleLabel) {
+      button.disabled = busy;
+      button.textContent = busy ? busyLabel : idleLabel;
+    }
+
+    document.getElementById('manual-choice').addEventListener('click', () => showPanel('manual'));
+    document.getElementById('back-to-login').addEventListener('click', () => showPanel('restore'));
+    document.getElementById('back-to-restore').addEventListener('click', () => showPanel('restore'));
+
+    const restoreForm = document.getElementById('restore-form');
+    const restoreButton = document.getElementById('restore-submit');
+    const restoreError = document.getElementById('restore-error');
+    let lastRestore = null;
+
+    restoreForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      error.textContent = '';
-      save.disabled = true;
-      save.textContent = 'Enregistrement...';
+      restoreError.textContent = '';
+      setBusy(restoreButton, true, 'Connexion et restauration…', 'Connexion et synchronisation');
+      try {
+        const result = await window.maildeskSetup.restore({
+          supabaseUrl: document.getElementById('supabaseUrl').value.trim(),
+          supabasePublishableKey: document.getElementById('publishableKey').value.trim(),
+          email: document.getElementById('email').value.trim(),
+          password: document.getElementById('password').value,
+        });
+        if (!result?.ok) throw new Error(result?.error || 'Restauration impossible');
+        lastRestore = result;
+
+        if (!result.needsResendApiKey) return;
+
+        document.getElementById('finalFrom').value = result.from || '';
+        const restored = result.restored || {};
+        document.getElementById('restore-success').textContent =
+          'Connexion réussie — l’espace Supabase de ' + (result.email || 'votre compte') + ' est synchronisé sur ce PC.';
+
+        const metrics = [
+          ['messages', 'Messages'],
+          ['folders', 'Dossiers'],
+          ['contacts', 'Contacts'],
+          ['rules', 'Règles'],
+          ['templates', 'Modèles'],
+          ['calendarEvents', 'Événements'],
+          ['blockedSenders', 'Blocages'],
+        ];
+        document.getElementById('restore-summary').innerHTML = metrics.map(([key, label]) =>
+          '<div class="metric"><strong>' + Number(restored[key] || 0) + '</strong><span>' + label + '</span></div>'
+        ).join('');
+
+        const warning = document.getElementById('restore-warning');
+        const missing = Array.isArray(restored.missingTables) ? restored.missingTables : [];
+        warning.hidden = missing.length === 0;
+        if (missing.length) {
+          warning.textContent =
+            'Restauration partielle — certaines tables optionnelles nécessitent une mise à niveau des droits : '
+            + missing.join(', ')
+            + '. Après ouverture, utilisez Paramètres → Supabase → Créer / réparer les tables.';
+        }
+        showPanel('finalize');
+      } catch (err) {
+        restoreError.textContent = err?.message || String(err);
+      } finally {
+        setBusy(restoreButton, false, 'Connexion et restauration…', 'Connexion et synchronisation');
+      }
+    });
+
+    const finalizeForm = document.getElementById('finalize-form');
+    const finalizeButton = document.getElementById('finalize-submit');
+    const finalizeError = document.getElementById('finalize-error');
+    finalizeForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      finalizeError.textContent = '';
+      setBusy(finalizeButton, true, 'Finalisation…', 'Terminer et ouvrir MailDesk');
       try {
         const result = await window.maildeskSetup.save({
-          from: document.getElementById('from').value.trim(),
-          apiKey: document.getElementById('apiKey').value.trim(),
+          from: document.getElementById('finalFrom').value.trim(),
+          apiKey: document.getElementById('finalApiKey').value.trim(),
         });
         if (!result?.ok) throw new Error(result?.error || 'Configuration impossible');
       } catch (err) {
-        error.textContent = err?.message || String(err);
-        save.disabled = false;
-        save.textContent = 'Enregistrer et ouvrir MailDesk';
+        finalizeError.textContent = err?.message || String(err);
+        setBusy(finalizeButton, false, 'Finalisation…', 'Terminer et ouvrir MailDesk');
+      }
+    });
+
+    const manualForm = document.getElementById('manual-form');
+    const manualButton = document.getElementById('manual-submit');
+    const manualError = document.getElementById('manual-error');
+    manualForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      manualError.textContent = '';
+      setBusy(manualButton, true, 'Enregistrement…', 'Enregistrer et ouvrir MailDesk');
+      try {
+        const result = await window.maildeskSetup.save({
+          from: document.getElementById('manualFrom').value.trim(),
+          apiKey: document.getElementById('manualApiKey').value.trim(),
+        });
+        if (!result?.ok) throw new Error(result?.error || 'Configuration impossible');
+      } catch (err) {
+        manualError.textContent = err?.message || String(err);
+        setBusy(manualButton, false, 'Enregistrement…', 'Enregistrer et ouvrir MailDesk');
       }
     });
   </script>

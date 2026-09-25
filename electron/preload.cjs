@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld("maildesk", {
   restoreBackup: () => ipcRenderer.invoke("maildesk:backup-restore"),
   openDataFolder: () => ipcRenderer.invoke("maildesk:data-folder-open"),
   getAppInfo: () => ipcRenderer.invoke("maildesk:app-info"),
+  openWorkspaceSetup: () => ipcRenderer.invoke("maildesk:workspace-setup-open"),
   getWindowsIntegration: () => ipcRenderer.invoke("maildesk:windows-integration-get"),
   setWindowsStartup: (enabled) => ipcRenderer.invoke("maildesk:windows-startup-set", enabled),
   setMailtoHandler: (enabled) => ipcRenderer.invoke("maildesk:mailto-set", enabled),

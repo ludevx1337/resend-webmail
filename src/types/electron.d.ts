@@ -241,6 +241,8 @@ declare global {
         mobileApiUrl: string;
         hasApiKey: boolean;
         hasSupabaseKey: boolean;
+        hasSupabasePublishableKey: boolean;
+        hasSupabaseAuthSession: boolean;
         hasSupabaseManagementToken: boolean;
         autoUpdateEnabled: boolean;
         updateManifestUrl: string;
@@ -317,6 +319,8 @@ declare global {
         mobileApiUrl: string;
         hasApiKey: boolean;
         hasSupabaseKey: boolean;
+        hasSupabasePublishableKey: boolean;
+        hasSupabaseAuthSession: boolean;
         hasSupabaseManagementToken: boolean;
         autoUpdateEnabled: boolean;
         updateManifestUrl: string;
@@ -347,6 +351,8 @@ declare global {
         sync?: SyncResult;
         supabaseProjectRef: string;
         hasSupabaseKey: boolean;
+        hasSupabasePublishableKey: boolean;
+        hasSupabaseAuthSession: boolean;
         hasSupabaseManagementToken: boolean;
       }>;
       getActiveDraft: () => Promise<LocalDraft | null>;
@@ -471,6 +477,7 @@ declare global {
         userDataPath: string;
         databasePath: string;
       }>;
+      openWorkspaceSetup: () => Promise<boolean>;
       getWindowsIntegration: () => Promise<{ isPackaged: boolean; openAtLogin: boolean; mailtoRegistered: boolean }>;
       setWindowsStartup: (enabled: boolean) => Promise<{ isPackaged: boolean; openAtLogin: boolean; mailtoRegistered: boolean; ok: boolean; message?: string }>;
       setMailtoHandler: (enabled: boolean) => Promise<{ isPackaged: boolean; openAtLogin: boolean; mailtoRegistered: boolean; ok: boolean }>;
